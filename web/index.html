@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover so the play bar can extend into the home-indicator area and pad
+         itself with env(safe-area-inset-bottom) rather than floating above a black strip. -->
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0f13" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <!-- Standalone when saved to the home screen, which is how this actually gets used on a
+         phone; without it iOS opens it in Safari chrome and the play bar loses its space. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Crate" />
+
+    <!-- One SVG covering both browser themes. A favicon is an isolated
+         document, so it inherits nothing from the page and currentColor is
+         useless — but it does honour an internal <style>, media query
+         included, so the file recolours itself. That replaces the pair of
+         pre-inverted PNG cuts and their media-qualified links. The PNG stays
+         as a fallback for anything that will not take an SVG icon. -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+    <!-- iOS composites this onto black and rounds it itself, so it is the one
+         icon that gets an opaque ground rather than transparency. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <title>Crate</title>
+
+    <!--
+      Applied before the stylesheet paints, on purpose.
+
+      Doing this from React means one frame of the wrong theme on every load —
+      a white flash for anyone who has chosen dark, which is the single most
+      noticeable way to get this wrong. Inline and synchronous is the only
+      placement that avoids it. Kept to the two lines that matter; the module
+      that owns the rest of this logic runs later and agrees with it.
+    -->
+    <script>
+      try {
+        var t = localStorage.getItem('crate.theme');
+        if (t === 'dark' || t === 'light') {
+          document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.style.colorScheme = t;
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

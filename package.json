@@ -1,0 +1,41 @@
+{
+  "name": "crate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Music discovery and request front end for Lidarr",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:web": "npm --prefix web ci && npm --prefix web run build",
+    "build:server": "tsc -p tsconfig.json",
+    "build": "npm run build:web && npm run build:server",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/compress": "^9.1.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/multipart": "^10.1.0",
+    "@fastify/static": "^8.0.4",
+    "argon2": "^0.41.1",
+    "better-sqlite3": "^11.7.0",
+    "fastify": "^5.2.1",
+    "jimp": "^1.6.1",
+    "music-metadata": "^11.14.0",
+    "node-taglib-sharp": "^6.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MattLarritt/cratemusic.git"
+  }
+}

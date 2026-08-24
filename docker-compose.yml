@@ -1,0 +1,40 @@
+# crate — a self-hosted music library, player and recommender.
+#
+# Copy .env.example to .env, set your paths, then `docker compose up -d`.
+# crate boots with no configuration at all: every integration below is optional
+# and its absence disables that feature rather than breaking startup.
+services:
+  crate:
+    build: .
+    image: crate:local
+    container_name: crate
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Where the SQLite database, artwork cache and plugins live. One directory,
+      # one file per concern — back this up and you have backed up crate.
+      CRATE_DB: /data/crate.db
+      CRATE_PORT: "8080"
+      # Set this if you terminate TLS elsewhere and reach crate over plain HTTP
+      # on a trusted LAN; otherwise the session cookie is Secure-only and you
+      # will not be able to sign in.
+      # CRATE_COOKIE_INSECURE: "1"
+    volumes:
+      - ./data:/data
+      # Your music library. crate only writes here when importing or deleting.
+      - ${CRATE_MUSIC_DIR:?set CRATE_MUSIC_DIR in .env}:/music
+      # Where your download client puts finished files. crate imports FROM here,
+      # stages uploads here, and moves deletions to .crate-trash inside it.
+      #
+      # It must be a DIFFERENT tree from your music library. crate compares them
+      # by device and inode and refuses the import if they are the same, because
+      # importing a library onto itself is how libraries get destroyed.
+      - ${CRATE_DOWNLOADS_DIR:?set CRATE_DOWNLOADS_DIR in .env}:/downloads
+    ports:
+      - "${CRATE_BIND:-127.0.0.1}:8080:8080"
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/api/health']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

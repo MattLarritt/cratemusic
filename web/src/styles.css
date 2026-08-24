@@ -1,0 +1,3046 @@
+/* Artwork-led, dark by default. CSS variables and no framework, matching the
+   approach both existing apps on this estate already use. */
+
+:root {
+  color-scheme: dark light;
+  /* Album covers are squares with this radius app-wide; artists are circles. */
+  --album-radius: 15px;
+  /* Chord sheets live or die on a fixed advance width — see web/src/plugins/chords/. */
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #0d0f13;
+  --bg2: #14171d;
+  --card: #1a1e26;
+  --fg: #e9ecf1;
+  --muted: #8d95a3;
+  --bd: rgba(255, 255, 255, 0.09);
+  /*
+   * Album-hero wash. The hero blows the album's own cover up and blurs it, which gives
+   * every page a palette drawn from the music — but the numbers are tuned for a dark
+   * background. Over white the same values read as a garish smear with grey text floating
+   * on top, so the strength is a variable and light mode turns it down, rather than each
+   * theme restating the rules.
+   */
+  --hero-wash: 0.5;
+  --hero-sat: 1.5;
+  --hero-scrim-near: 88%;
+  --hero-scrim-far: 40%;
+  --acc: #5b8cff;
+  /* Focus ring. Lower alpha on light, where the same value reads as a hard halo. */
+  --acc-soft: rgba(91, 140, 255, 0.22);
+  --ok: #3ddc97;
+  --warn: #ffb454;
+  --err: #ff6b6b;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+/*
+ * Three states, two selectors.
+ *
+ * The declarations above are dark and this query is light, which between them
+ * already ARE "auto" — so following the system needs no attribute at all, and
+ * only an explicit choice writes one. The attribute rules therefore have to
+ * come after this query to beat it, which is why they are here rather than
+ * grouped with the defaults.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f7f9;
+    --bg2: #eceef2;
+    --card: #fff;
+    --fg: #171a1f;
+    --muted: #626a78;
+    --bd: rgba(0, 0, 0, 0.1);
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    --acc-soft: rgba(91, 140, 255, 0.15);
+    --hero-wash: 0.26;
+    --hero-sat: 1.05;
+    --hero-scrim-near: 84%;
+    --hero-scrim-far: 56%;
+  }
+}
+
+:root[data-theme="light"] {
+  --acc-soft: rgba(91, 140, 255, 0.15);
+  --hero-wash: 0.26;
+  --hero-sat: 1.05;
+  --hero-scrim-near: 84%;
+  --hero-scrim-far: 56%;
+  --bg: #f6f7f9;
+  --bg2: #eceef2;
+  --card: #fff;
+  --fg: #171a1f;
+  --muted: #626a78;
+  --bd: rgba(0, 0, 0, 0.1);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* Forced dark has to restate the defaults, because the query above may have
+   already overwritten them on a light system. */
+:root[data-theme="dark"] {
+  --acc-soft: rgba(91, 140, 255, 0.22);
+  --hero-wash: 0.5;
+  --hero-sat: 1.5;
+  --hero-scrim-near: 88%;
+  --hero-scrim-far: 40%;
+  --bg: #0d0f13;
+  --bg2: #14171d;
+  --card: #1a1e26;
+  --fg: #e9ecf1;
+  --muted: #8d95a3;
+  --bd: rgba(255, 255, 255, 0.09);
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, var(--bg2), var(--bg) 420px);
+  color: var(--fg);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
+
+/*
+ * A little light in the dark.
+ *
+ * Two soft pools near the top — accent on the left, a warmer counterweight on
+ * the right — so the page has a light source instead of being one flat slab.
+ * Fixed rather than scrolled: it should behave like the room the content moves
+ * through, not like a graphic attached to the top of a long page.
+ *
+ * On ::before at z-index -1 rather than on the body's own background, because
+ * body already carries the vertical gradient and stacking a radial on top of
+ * it in one shorthand makes both harder to reason about. Also pointer-events:
+ * none, or it would eat the first click on anything beneath it.
+ *
+ * Dark only. The same treatment on the light theme reads as a smudge.
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(70rem 40rem at 12% -8%, color-mix(in srgb, var(--acc) 16%, transparent), transparent 62%),
+    radial-gradient(52rem 34rem at 92% 2%, color-mix(in srgb, #b06bff 11%, transparent), transparent 60%);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) body::before { display: none; }
+}
+:root[data-theme="light"] body::before { display: none; }
+
+a { color: var(--acc); text-decoration: none; }
+button { font: inherit; }
+
+/*
+ * Everything you type into, styled once.
+ *
+ * There were four near-identical rules for this — .field input, .bar input, .userdata
+ * input and the header search — each with slightly different padding, radius and
+ * background, and anything new picked up none of them and arrived looking like a raw
+ * browser control. One base rule, and the specific ones below now only say how they
+ * differ in SIZE, never how they look.
+ *
+ * Focus is a soft ring rather than a hard accent border. A 1px border flipping to full
+ * accent reads as a sharp outline snapping on; a muted edge plus a low-alpha glow says
+ * the same thing quietly. --acc-soft carries the alpha so both themes get a ring tuned
+ * to their own background.
+ */
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="number"],
+input[type="url"],
+input[type="search"],
+input:not([type]),
+textarea,
+select {
+  font: inherit;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--card);
+  color: var(--fg);
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, background-color 0.14s ease;
+}
+input::placeholder,
+textarea::placeholder { color: var(--muted); opacity: 1; }
+
+input[type="text"]:hover,
+input[type="password"]:hover,
+input[type="email"]:hover,
+input[type="number"]:hover,
+input[type="url"]:hover,
+input[type="search"]:hover,
+input:not([type]):hover,
+textarea:hover,
+select:hover { border-color: color-mix(in srgb, var(--fg) 18%, var(--bd)); }
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus,
+input[type="number"]:focus,
+input[type="url"]:focus,
+input[type="search"]:focus,
+input:not([type]):focus,
+textarea:focus,
+select:focus {
+  border-color: color-mix(in srgb, var(--acc) 45%, var(--bd));
+  box-shadow: 0 0 0 3px var(--acc-soft);
+}
+
+input:disabled,
+textarea:disabled,
+select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+
+/* ---- chrome ---- */
+
+header.top {
+  position: sticky;
+  top: 0;
+  /*
+   * Above the full-height panels (150–160), below modals (300).
+   *
+   * This number is about the USER MENU, not the header. `position: sticky` makes the header a
+   * stacking context, so the menu popup's own z-index: 200 was being clamped to whatever the
+   * header sat at — it opened downward out of the header and was painted behind the lyrics and
+   * chords panels. Nothing about the header's own appearance changes: the panels are positioned
+   * at top: 72px precisely to stay clear of it.
+   */
+  z-index: 170;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 22px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--bd);
+}
+
+/* An <a> now, so navigation is real. Both of these override the accent colour
+   and inline layout an anchor otherwise brings with it. */
+/* ---- the mark ----
+   Artwork rather than type, so it is the logo everywhere rather than an
+   approximation of it in whatever font happens to load. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  cursor: pointer;
+  /* Sized by height; width follows the artwork's own proportions. */
+  height: 30px;
+}
+/*
+ * Colour comes from `color`, like text.
+ *
+ * The mark is inline SVG filled with currentColor, so a theme change is just a
+ * different --fg. The PNG this replaces had to be inverted by filter to be
+ * visible on dark, which worked but meant the logo's colour was a side effect
+ * of a filter rather than something stated.
+ */
+.brand { color: var(--fg); }
+.brand svg {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+
+.brand.stacked {
+  /* display:flex rather than the brand's inline-flex: an inline box shrinks to
+     its content and sits wherever the text flow puts it, which on the login
+     card meant hugging the left edge. */
+  display: flex;
+  width: 100%;
+  height: auto;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.brand.stacked svg { height: auto; width: 148px; }
+
+@media (max-width: 620px) {
+  .brand { height: 26px; }
+  .brand.stacked svg { width: 124px; }
+}
+
+header.top input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  max-width: 560px;
+  padding: 9px 14px;
+  /* A pill here, rounded rectangles everywhere else. Everything else about it — colours,
+     border, the focus ring — comes from the base rule. */
+  border-radius: 999px;
+}
+
+/* ---- header tabs and the user menu ---- */
+
+/* Places, not buttons: plain text with an accent underline on the active one.
+   The old chip-buttons made the header read as a toolbar. The tabs sit right
+   of the search box; only the avatar is pushed to the far edge. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  position: relative;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 8px 10px;
+  white-space: nowrap;
+  border-radius: 8px;
+}
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--fg); }
+.tab.active::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--acc);
+}
+
+.usermenu { position: relative; flex: none; margin-left: auto; }
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--bd);
+  background: linear-gradient(135deg, var(--acc), color-mix(in srgb, var(--acc) 55%, #7c3aed));
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.95rem;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.avatar:hover { filter: brightness(1.1); }
+/* Doubled selector on purpose: .menupop is defined later in this file and its
+   position:fixed would win a specificity tie. */
+.menupop.usermenupop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  left: auto;
+  min-width: 210px;
+}
+.userhead {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--bd);
+  margin-bottom: 4px;
+}
+.userhead .muted { font-size: 0.78rem; }
+
+main { padding: 22px; max-width: 1500px; margin: 0 auto; }
+
+/* Clearance for the fixed player, only while one exists: without it the last
+   row of every page sits flush under (or beneath) the bar. :has() keeps the
+   space tied to the bar itself, so pages without a player keep their edge. */
+body:has(.playbar) main {
+  padding-bottom: calc(120px + env(safe-area-inset-bottom));
+}
+
+/* ---- rows and grids ---- */
+
+.rowhead { display: flex; align-items: baseline; gap: 10px; margin: 26px 0 12px; }
+.rowhead h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.01em; }
+.rowhead .reason { color: var(--muted); font-size: 0.82rem; }
+
+.shelf {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 168px;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+  scrollbar-width: thin;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: 16px;
+}
+
+/* ---- cards ---- */
+
+/* Cards that open something are anchors; display and colour have to be reasserted
+   or an inline anchor collapses the grid and tints every label accent-blue. */
+.card {
+  color: inherit;
+  display: block;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+.card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--acc) 50%, var(--bd)); }
+
+.art {
+  aspect-ratio: 1;
+  width: 100%;
+  background: linear-gradient(135deg, var(--bg2), var(--card));
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 1.6rem;
+  font-weight: 700;
+  overflow: hidden;
+}
+.art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.meta { padding: 9px 11px 12px; }
+.meta .t {
+  font-weight: 600;
+  font-size: 0.9rem;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.meta .s {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- badges and buttons ---- */
+
+.tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+.tag.held { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.tag.req { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+/* In progress, not done: distinct from the green a fulfilled request wears. */
+.tag.queued { color: var(--acc); border-color: color-mix(in srgb, var(--acc) 45%, transparent); }
+
+.btn {
+  padding: 7px 13px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: var(--acc);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+/* Some .btn elements are anchors (nav links). inline-block makes the padding and
+   height match the real <button> siblings sitting next to them. */
+a.btn { display: inline-block; text-align: center; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.sec { background: transparent; border-color: var(--bd); color: var(--fg); }
+.btn.sm { padding: 4px 10px; font-size: 0.78rem; }
+
+/* Status then reason, on one line: the tag, then why. Both are inline so the
+   eye carries straight from one to the other instead of hunting down a row. */
+.reqstatus {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.reqnote,
+.reqerr {
+  font-size: 0.82rem;
+  min-width: 0;
+  /* Clipped to one line with the full text in the tooltip — a stall message can
+     run to a paragraph, and a table column is not the place to print it. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reqnote { color: var(--muted); }
+.reqerr { color: var(--warn); }
+
+/* Keeps the status column from being squeezed to nothing by the columns before
+   it, so there is room for a reason beside the tag. */
+.list td:last-child { max-width: 34ch; }
+
+/* A hairline between "whose requests" and "how they went". */
+.chipsplit {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--bd);
+}
+
+/* ---- artist detail ---- */
+
+.hero {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--bd);
+  margin-bottom: 20px;
+  min-height: 210px;
+  display: flex;
+  align-items: flex-end;
+  background: var(--card);
+}
+.hero img.bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.42;
+}
+.hero .inner {
+  position: relative;
+  padding: 22px;
+  display: flex;
+  gap: 18px;
+  align-items: flex-end;
+  width: 100%;
+  background: linear-gradient(0deg, color-mix(in srgb, var(--bg) 92%, transparent), transparent);
+}
+.hero .inner h1 { margin: 0 0 4px; font-size: 1.7rem; letter-spacing: -0.02em; }
+.hero .inner .sub { color: var(--muted); font-size: 0.88rem; }
+.hero .acts { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---- misc ---- */
+
+.note {
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--bd));
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 14px 0;
+  font-size: 0.88rem;
+}
+.note.bad {
+  border-color: color-mix(in srgb, var(--err) 45%, var(--bd));
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+}
+.note.good {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--bd));
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+
+.muted { color: var(--muted); }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+.spinner { color: var(--muted); padding: 40px 0; text-align: center; }
+
+table.list { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+table.list th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+table.list td { padding: 9px 10px; border-bottom: 1px solid var(--bd); }
+
+.albumrow { display: flex; align-items: center; gap: 12px; }
+.albumrow .thumb { width: 46px; height: 46px; border-radius: 6px; overflow: hidden; flex: none; background: var(--bg2); }
+.albumrow .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  box-shadow: var(--shadow);
+  font-size: 0.88rem;
+  max-width: 90vw;
+}
+.toast.bad { border-color: color-mix(in srgb, var(--err) 55%, var(--bd)); }
+.toast.good { border-color: color-mix(in srgb, var(--ok) 55%, var(--bd)); }
+
+/* ---- sign-in ---- */
+
+.loginwrap { min-height: 100vh; display: grid; place-items: center; padding: 22px; }
+
+.logincard {
+  width: 100%;
+  max-width: 360px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 14px;
+  padding: 26px;
+  box-shadow: var(--shadow);
+}
+
+.field { display: block; margin-bottom: 14px; }
+.field span { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 5px; }
+.field input { width: 100%; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--bg2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ---- track listings ---- */
+
+.disc {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 2px 4px;
+  flex: none;
+}
+.disc:hover { color: var(--fg); }
+.albumrow .ttl { cursor: pointer; }
+.albumrow .tinfo { flex: 1; min-width: 0; }
+.albumrow .tinfo .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Only earns its place once the Type and Released columns are gone. */
+.albumrow .sub { display: none; font-size: 0.74rem; margin-top: 1px; }
+
+.tracks { padding: 4px 0 14px 60px; }
+.tracks ol { list-style: none; margin: 0; padding: 0; }
+.tracks li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 55%, transparent);
+  font-size: 0.86rem;
+}
+.tracks li:last-child { border-bottom: none; }
+.tracks .n { width: 24px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tracks .ti { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tracks .d { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The per-song Get button sits at the end of a track line without stretching it. */
+.tracks li .btn { flex: none; margin-left: 4px; }
+
+/* ---- preview button ----
+   A quiet circle until you hover it, because it sits on every row of an album
+   you do not own and forty loud buttons would read as the point of the page. */
+.prev {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--bd);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.prev:hover:not(:disabled) { color: var(--fg); border-color: var(--fg); }
+
+/* The preview button sitting on album art.
+   The bare .prev is a muted outline, which is legible on a page background and
+   invisible over a bright cover, so on artwork it gets its own scrim. Top-left,
+   because the centre belongs to the add button and the bottom edge to the
+   gradient the title sits in. */
+.tilecorner { position: absolute; top: 6px; left: 6px; z-index: 2; }
+.tilecorner .prev {
+  width: 28px; height: 28px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-color: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(3px);
+}
+.tilecorner .prev:hover:not(:disabled) { background: rgba(0, 0, 0, 0.75); border-color: #fff; }
+.tilecorner .prev.on { color: var(--bg); background: var(--acc); border-color: var(--acc); }
+/* Fingers, not cursors — the same 32px the bare .prev takes, which this rule
+   would otherwise shrink back to 28 by being more specific. */
+@media (hover: none) and (pointer: coarse) {
+  .tilecorner .prev { width: 32px; height: 32px; }
+}
+.prev.on {
+  color: var(--bg);
+  background: var(--acc);
+  border-color: var(--acc);
+}
+/* Disabled here means "Apple has no preview", which is information rather than
+   an error — so it fades out instead of looking broken. */
+.prev:disabled { opacity: .35; cursor: default; }
+.prev .spin { animation: prevspin .8s linear infinite; transform-origin: 50% 50%; }
+@keyframes prevspin { to { transform: rotate(360deg); } }
+.songrow .prev { margin-left: 4px; }
+/* Fingers, not cursors. */
+@media (hover: none) and (pointer: coarse) {
+  .prev { width: 32px; height: 32px; }
+}
+.tracks .ttl, a.ttl { cursor: pointer; }
+a.ttl { color: inherit; }
+a.ttl:hover { color: var(--acc); }
+.tracks .src { margin-top: 8px; font-size: 0.76rem; }
+
+/* ---- account / user management ---- */
+
+.pwform { margin: 0 0 22px; }
+.bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.bar input[type="text"], .bar input[type="password"], .bar input:not([type]) {
+  padding: 7px 11px;
+  min-width: 150px;
+}
+.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 0.85rem; }
+
+/* ---- admin ---- */
+
+/* Nav left, pane right. Collapses to stacked on a phone, where a 190px column
+   would leave the pane unusably narrow. */
+.admin {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 22px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .admin { grid-template-columns: 1fr; }
+}
+
+.adminnav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 76px;
+}
+
+.adminlink {
+  display: block;
+  color: var(--fg);
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  line-height: 1.25;
+}
+.adminlink:hover { background: var(--card); }
+.adminlink.on {
+  background: var(--card);
+  border-color: color-mix(in srgb, var(--acc) 45%, var(--bd));
+}
+.adminlink .l { display: block; font-weight: 600; font-size: 0.92rem; }
+.adminlink .h { display: block; color: var(--muted); font-size: 0.75rem; }
+
+.adminpane { min-width: 0; }
+.adminpane h3 {
+  margin: 26px 0 10px;
+  font-size: 0.95rem;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--bd);
+}
+.adminpane .field { max-width: 520px; }
+.adminpane .field em { font-style: normal; font-weight: 400; }
+
+/* Two fields side by side for min/max pairs, stacking when there is no room. */
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  max-width: 520px;
+}
+@media (max-width: 560px) {
+  .pair { grid-template-columns: 1fr; }
+}
+
+.testrow { margin: 4px 0 6px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+.sm { font-size: 0.82rem; }
+.adminpane .muted.sm { max-width: 560px; margin: 6px 0 4px; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.stat {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 14px;
+}
+.stat .n { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+.stat .k { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+
+/* diskbar, NOT bar: .bar was already the add-user form's flex row, and a second
+   generic rule further down the file won — squashing that form to a 10px strip with
+   overflow hidden, which is what "the add user form is cut off" was. */
+.diskbar {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  overflow: hidden;
+  max-width: 560px;
+}
+.diskbar .fill {
+  height: 100%;
+  background: var(--acc);
+  /* Never render as literally nothing when a share is nearly empty. */
+  min-width: 2px;
+}
+
+/* ---- webhooks ---- */
+
+.hook {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 13px 15px;
+  margin-bottom: 10px;
+}
+.hookhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hook .t { font-weight: 600; }
+.hook .s { font-size: 0.79rem; margin-top: 2px; }
+.hook .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.hookedit {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bd);
+}
+.hookedit select {
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--fg);
+}
+
+/* Two columns of checkboxes so nine triggers do not become a long scroll. */
+.triggers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px 14px;
+  margin: 8px 0 4px;
+  max-width: 620px;
+}
+.triggers .chk { align-items: flex-start; }
+.triggers .chk em { font-style: normal; font-size: 0.74rem; display: block; }
+
+/* ---- play bar ---- */
+
+/* Fixed, and the body gets bottom padding to match so the last row of any page is never
+   hidden behind it. */
+body { padding-bottom: 92px; }
+
+.playbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--bg2) 92%, transparent);
+  backdrop-filter: blur(14px);
+  border-top: 1px solid var(--bd);
+}
+
+@media (max-width: 760px) {
+  /* Volume and the queue counter are the first things to go; transport and seek are not
+     negotiable on a phone. */
+  .playbar { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+  .pbside, .pbsub { display: none; }
+}
+
+.pbnow { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pbnow .art { width: 46px; height: 46px; flex: none; border-radius: 6px; }
+.pbmeta { min-width: 0; }
+.pbmeta .t {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pbmeta .s {
+  font-size: 0.76rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pbmain { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pbbuttons { display: flex; align-items: center; justify-content: center; gap: 4px; }
+
+.pbicon {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.pbicon:hover { color: var(--fg); background: var(--card); }
+.pbicon.on { color: var(--acc); }
+.pbicon.big { font-size: 1.35rem; color: var(--fg); }
+.pbicon.sm { font-size: 0.85rem; padding: 2px 6px; }
+.pbicon.ab { font-size: 0.72rem; padding: 5px 7px; letter-spacing: 0.02em; }
+
+.pbseek { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; }
+
+/* The fill and the A/B markers sit behind a transparent range input, so dragging and
+   keyboard control come free while the visuals stay ours. */
+.pbtrack { position: relative; flex: 1; height: 16px; display: flex; align-items: center; }
+.pbtrack::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+}
+.pbfill {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--acc);
+  pointer-events: none;
+}
+.pbmark {
+  position: absolute;
+  width: 2px;
+  height: 12px;
+  background: var(--warn);
+  pointer-events: none;
+}
+.pbmark.b { background: var(--ok); }
+.pbtrack input[type="range"] {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+.pbtrack input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: none;
+}
+.pbtrack input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: none;
+}
+
+.pbside { display: flex; align-items: center; justify-content: flex-end; }
+
+/* Volume under the scrubber where the pointer already is, the queue position
+   spelled out under its right end. */
+.pbsub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 3px;
+}
+.pbvolume { display: flex; align-items: center; gap: 6px; }
+/* The volume reuses the scrubber's track-and-fill anatomy at a fixed width,
+   so the playbar's two sliders look like siblings instead of strangers. */
+.pbtrack.vol { flex: none; width: 110px; }
+.pbcount { font-size: 0.76rem; color: var(--muted); white-space: nowrap; }
+
+/* Touch devices get no volume slider or count at any width: iOS ignores
+   programmatic volume entirely (hardware buttons own it), and landscape
+   phones and iPads sail past the width cutoff above. */
+@media (hover: none) and (pointer: coarse) {
+  .pbside, .pbsub { display: none; }
+  .playbar { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+}
+
+/* The row currently playing, in any table. */
+.list tr.playing td { color: var(--acc); }
+.list tr.playing td:first-child { position: relative; }
+
+/* ===========================================================================
+   Art-forward home page
+   ---------------------------------------------------------------------------
+   The front page used to be tables, which read as a database report rather than
+   a music app. The grammar here is borrowed from Apple Music — artwork carries
+   the page, type is big and tight, sections scroll sideways, artists are circles
+   and everything else is a rounded square — with our own accent doing the work
+   their colour-sampled backgrounds do: a blue play button that only appears on
+   hover, and a blurred blow-up of the hero's own cover behind it.
+   =========================================================================== */
+
+/* ---- section headings ---- */
+
+.sechead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 34px 0 14px;
+}
+.sechead h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  /* Tight tracking is most of what makes large type look deliberate rather than big. */
+  letter-spacing: -0.025em;
+}
+.sechead .sub {
+  color: var(--muted);
+  font-size: 0.83rem;
+  margin-left: 2px;
+}
+.sechead .spacer { flex: 1; }
+/* The signature: a small accent bar rather than Apple's plain text heading. */
+.sechead h2::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 0.95em;
+  margin-right: 9px;
+  vertical-align: -0.08em;
+  border-radius: 2px;
+  background: var(--acc);
+}
+
+/* ---- hero ---- */
+
+.hero2 {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  margin: 8px 0 6px;
+  padding: 26px;
+  display: flex;
+  align-items: flex-end;
+  gap: 22px;
+  min-height: 220px;
+  border: 1px solid var(--bd);
+}
+/* The album's own cover, blown up and blurred. Cheap, and it gives every hero a
+   palette drawn from the music instead of a fixed gradient. */
+.hero2 .backdrop {
+  position: absolute;
+  inset: -20%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(44px) saturate(var(--hero-sat));
+  transform: scale(1.15);
+  opacity: var(--hero-wash);
+}
+.hero2::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--bg) var(--hero-scrim-near), transparent),
+    color-mix(in srgb, var(--bg) var(--hero-scrim-far), transparent)
+  );
+}
+.hero2 > * { position: relative; z-index: 1; }
+
+.hero2 .cover {
+  width: 168px;
+  height: 168px;
+  flex: none;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  background: var(--card);
+}
+.hero2 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.hero2 .words { min-width: 0; }
+.hero2 .kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--acc);
+  margin-bottom: 6px;
+}
+.hero2 h1 {
+  margin: 0 0 4px;
+  font-size: 2.1rem;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  /* Two lines maximum: a long title should not push the buttons off the hero. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hero2 .by { color: var(--muted); font-size: 0.95rem; margin-bottom: 14px; }
+/* Quieter than the album's own year, because it describes the file, not the record. */
+.hero2 .by .reissue { opacity: 0.72; }
+.hero2 .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Playlists put the words first and the art on the right — see PlaylistView. */
+.hero2.artright { align-items: flex-start; }
+.hero2.artright .words { flex: 1 1 auto; }
+.hero2.artright .cover { margin-left: auto; order: 2; }
+.hero2 .pldesc {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  max-width: 60ch;
+  white-space: pre-wrap;
+}
+
+/* The cover's own Replace/Remove overlay. */
+.plcover { position: relative; cursor: pointer; }
+.plcover .artacts {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  /* Hidden from the pointer while invisible, or it would swallow clicks on the art. */
+  pointer-events: none;
+}
+.plcover.open .artacts { opacity: 1; pointer-events: auto; }
+@media (hover: hover) and (pointer: fine) {
+  .plcover:hover .artacts { opacity: 1; pointer-events: auto; }
+}
+/* The scrim is dark in both themes, so the secondary button cannot inherit --fg —
+   in light mode that is near-black text on near-black and reads as missing. */
+.plcover .artacts .btn.sec {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+/*
+ * A panel, deliberately NOT .card. That class is for clickable tiles and lifts itself two
+ * pixels on hover — which on a form means the whole thing jumps as the pointer crosses it
+ * on the way to a field.
+ */
+.pledit {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 16px;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+}
+.pledit label { display: grid; gap: 6px; }
+.pledit .lbl { font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+.pledit .bar { margin-bottom: 0; }
+/* Inside a modal the form loses its card chrome — the modal is already the card. */
+.modal .pledit { background: none; border: none; padding: 0; margin: 0; max-width: none; }
+
+/* The artist page's Songs/Albums switch: same pill as everywhere, with room to breathe
+   between the hero above and whichever list follows. */
+.artisttabs { margin: 16px 0 4px; }
+.artisttabs .segbtn { font-size: 0.86rem; padding: 6px 14px; }
+
+/* ---- dynamic playlist chips ---- */
+
+/* Pickable chips in the Dynamic builder, and static recipe chips on the playlist page.
+   Distinct from .chip (the chart selectors): these can be multi-selected and can be
+   negative (a saved mood's "steering away" terms). */
+.chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.pchip {
+  border: 1px solid var(--bd);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.pchip:hover { border-color: var(--acc); }
+.pchip.on { background: var(--acc); color: var(--acc-fg, #fff); border-color: var(--acc); }
+.pchip.static { cursor: default; }
+.pchip.neg { border-color: color-mix(in srgb, crimson 55%, var(--bd)); color: color-mix(in srgb, crimson 70%, var(--fg)); }
+
+@media (max-width: 620px) {
+  .hero2 { flex-direction: column; align-items: flex-start; padding: 18px; }
+  .hero2 .cover { width: 128px; height: 128px; }
+  .hero2 h1 { font-size: 1.5rem; }
+  /* Stacked, the art belongs above the words rather than orphaned at the bottom. */
+  .hero2.artright { flex-direction: column-reverse; justify-content: flex-end; }
+  .hero2.artright .cover { margin-left: 0; order: 0; }
+}
+
+/* ---- shelves ---- */
+
+/* ---- shelf navigation ----
+   The wrapper exists only to anchor the arrows. It must not introduce a
+   clipping or scrolling context of its own — the row inside is the scroller,
+   and its negative margins still need to bleed past the page gutter. */
+.shelfwrap { position: relative; }
+
+.shelfnav {
+  /* Touch devices never see these: a thumb already swipes, and a floating
+     arrow would sit on top of the artwork it is meant to reveal. */
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 38px;
+  width: 46px;
+  z-index: 4;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.7rem;
+  line-height: 1;
+  color: var(--fg);
+  /* A fade rather than a button: the row scrolls under it, so a hard edge
+     would look like the shelf ending early. */
+  background: linear-gradient(90deg, var(--bg) 40%, transparent);
+}
+.shelfnav.left { left: -22px; justify-content: flex-start; padding-left: 6px; }
+.shelfnav.right {
+  right: -22px;
+  justify-content: flex-end;
+  padding-right: 6px;
+  background: linear-gradient(270deg, var(--bg) 40%, transparent);
+}
+@media (hover: hover) and (pointer: fine) {
+  .shelfnav { display: flex; align-items: center; }
+}
+
+.shelf2 {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 176px;
+  gap: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* The scroll container clips everything at its padding edge, tile shadows
+     included — 2px of side padding cut every shadow into a hard vertical line
+     at both ends of the row. So the padding is as wide as the shadow bleed and
+     the negative margins take the same amount back, which keeps the tiles
+     aligned with the rest of the page while the shadows (and the hover lift)
+     get room to render. The row itself now runs to the screen edge, so tiles
+     scroll out under the page margin instead of vanishing at a seam. */
+  padding: 12px 22px 26px;
+  margin: -12px -22px -14px;
+  scroll-padding-inline: 22px;
+  scroll-snap-type: x proximity;
+  /* Hidden rather than thin: the row is obviously scrollable from the clipped
+     tile at its edge, and a visible bar under every shelf is a lot of chrome. */
+  scrollbar-width: none;
+}
+.shelf2::-webkit-scrollbar { display: none; }
+
+/* ---- an expanded shelf ----
+   A shelf is a sideways scroller because a row of six is a glance. Once you
+   have asked for a hundred it is a list, and a hundred tiles on one horizontal
+   axis is a worse way to read them than a grid you scroll normally. So Show
+   more does not just append: it changes what the shelf IS. */
+.shelf2.open {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-auto-columns: auto;
+  overflow: visible;
+  row-gap: 22px;
+}
+
+/* A card that navigates should say so before it is pressed. */
+.card.clickable { cursor: pointer; }
+.card.clickable:hover { border-color: var(--acc); }
+
+/* ---- profile pane rhythm ----
+   Seven panes built at seven different moments had seven different content
+   widths and three heading treatments. One system: the shell owns the page
+   header, sections use .subhead, and content shares one measure — wide
+   enough for a table, narrow enough to read. */
+.profilepane .panehead {
+  margin: 0 0 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bd);
+}
+.profilepane .panehead h2 { font-size: 1.15rem; }
+.rowhead.subhead { margin: 24px 0 8px; }
+.rowhead.subhead h3 { margin: 0; font-size: 0.95rem; letter-spacing: -0.01em; }
+.profilepane .note,
+.profilepane table.list,
+.profilepane .bar,
+.profilepane .pair,
+.profilepane .field,
+.profilepane .warmthrow,
+.profilepane .chips {
+  max-width: 680px;
+}
+
+/* ---- warmth dial ---- */
+.warmthrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bd);
+  max-width: 640px;
+}
+.warmthrow:last-of-type { border-bottom: none; }
+.warmthrow .wlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warmth { display: inline-flex; gap: 3px; }
+.wnotch {
+  width: 28px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.wnotch.on { background: var(--acc); border-color: var(--acc); color: #fff; }
+/* Zero is a different kind of statement — banish, not merely chill. */
+.wnotch.zero.on { background: var(--err); border-color: var(--err); }
+@media (max-width: 480px) {
+  .wnotch { width: 24px; height: 24px; }
+}
+
+/* ---- library controls ---- */
+
+/* The round play between a section's title and its count: the whole section,
+   one press, in the order shown. Accent-filled because it is THE action of
+   the page, where the sort buttons beside it are preferences. */
+.roundplay {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--acc);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  transition: transform .1s;
+}
+.roundplay:hover { transform: scale(1.06); }
+.roundplay svg { width: 15px; height: 15px; margin-left: 2px; }
+
+/* A pressed sort toggle. */
+.btn.sec.on { border-color: var(--acc); color: var(--acc); }
+
+/* The last item of a previewed section: same footprint as its neighbours so
+   the grid stays a grid, but plainly a door rather than a record. */
+.showall {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed var(--bd);
+  border-radius: 10px;
+  color: var(--acc);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.showall:hover { border-color: var(--acc); }
+.showall.tileform {
+  flex-direction: column;
+  aspect-ratio: 1;
+  border-radius: var(--album-radius);
+}
+.showall.tileform .muted { font-weight: 400; font-size: 0.78rem; }
+
+/* As a shelf's last tile it must sit on the tiles' own grid: a button carries
+   no inherited type or box, and the row is a scroller whose columns are a
+   fixed width. Squared to the artwork above it rather than the whole tile,
+   because a tile is art plus a caption and matching the art is what makes the
+   row read as even. */
+.shelf2 > .showall.shelfmore {
+  font: inherit;
+  aspect-ratio: 1;
+  width: 100%;
+  align-self: start;
+  scroll-snap-align: start;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--album-radius);
+}
+/* The expanded grid drops the fixed columns, so the tile follows suit. */
+.shelf2.open > .showall.shelfmore { align-self: stretch; }
+
+/* Icon-only shuffle on a phone: the glyph is the meaning, the word is width. */
+@media (max-width: 620px) {
+  .iconable .btnword { display: none; }
+}
+
+.favstar { color: var(--warn); margin-right: 5px; font-size: 0.85em; }
+
+/* ---- admin user inspect panel ---- */
+.userdata {
+  padding: 10px 12px 14px;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--bg2);
+  margin: 4px 0 10px;
+}
+.userdata .stats { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.userdata input { flex: 1; max-width: 280px; padding: 7px 10px; }
+
+/* ---- music orbs ----
+   Rendered at a third of the viewport and blown up here: the blur IS the
+   out-of-focus look, and it hides the low resolution that keeps the fill
+   cheap. Fixed and inert, same layer discipline as the theme glow — an
+   overlay that can catch a click is a bug with a long fuse. */
+.orbs {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  filter: blur(42px) saturate(1.15);
+  transform: translateZ(0); /* its own compositor layer, so blur is GPU work */
+}
+
+/* ---- theme picker ---- */
+.themerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 0.86rem;
+}
+.seg {
+  display: inline-flex;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  padding: 2px;
+}
+.segbtn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.segbtn:hover { color: var(--fg); }
+.segbtn.on {
+  background: var(--acc);
+  /* Against the accent, not against the page — this pill is the one place the
+     foreground colour cannot come from --fg. */
+  color: #fff;
+}
+
+/* ---- artwork placeholders ----
+   A record that will not load should look like a record that will not load,
+   not like a broken page. These sit in the same box the image would have
+   filled, so nothing reflows when one appears or is later replaced. */
+.ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--bg2);
+  color: var(--muted);
+  /* Quiet enough to read as absence rather than as an icon somebody chose. */
+  opacity: 0.65;
+}
+.phart { width: 58%; height: 58%; max-width: 76px; max-height: 76px; }
+/* Small thumbnails get proportionally more of the box, or the disc turns into
+   a dot at 42px. */
+.albumrow .ph .phart,
+.toprow .ph .phart,
+.songrow .ph .phart { width: 68%; height: 68%; }
+.art.circle .ph, .tileart .ph { border-radius: inherit; }
+.hero .ph, .heroart .ph { border-radius: 10px; }
+.heroart {
+  display: block;
+  width: 110px;
+  height: 110px;
+  border-radius: 10px;
+  overflow: hidden;
+  flex: none;
+}
+.heroart img { width: 100%; height: 100%; object-fit: cover; display: block; }
+@media (max-width: 760px) {
+  .heroart { width: 84px; height: 84px; }
+}
+
+/* ---- skeletons ----
+   A loading page should be the page, unfilled. A spinner in the middle of an
+   empty screen makes a click feel like it did nothing; a frame in the right
+   shape makes the same wait feel like arriving. */
+.sk {
+  background: linear-gradient(90deg, var(--bg2) 25%, var(--card) 50%, var(--bg2) 75%);
+  background-size: 400% 100%;
+  animation: skwave 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+/* Honour a reader who has asked the interface to stop moving. */
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; }
+}
+@keyframes skwave {
+  from { background-position: 100% 0; }
+  to   { background-position: 0 0; }
+}
+.sk-poster { width: 110px; height: 110px; border-radius: 10px; flex: none; }
+.sk-thumb  { width: 46px;  height: 46px;  border-radius: 6px;  flex: none; }
+.sk-h1     { width: 220px; height: 30px; border-radius: 8px; }
+.sk-line   { height: 11px; }
+@media (max-width: 760px) {
+  .sk-poster { width: 84px; height: 84px; }
+  .sk-thumb  { width: 42px; height: 42px; }
+  .sk-h1     { width: 62%; height: 24px; }
+}
+
+.showmore {
+  display: flex;
+  justify-content: center;
+  margin: 14px 0 4px;
+}
+/* The count sits inside the button, so the label stays a verb and the number
+   stays an aside rather than competing with it. */
+.showmore .btn { font-size: 0.86rem; }
+@media (max-width: 620px) {
+  .shelf2.open { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .showmore .btn { width: 100%; }
+}
+.shelf2 > * { scroll-snap-align: start; }
+
+@media (max-width: 620px) {
+  .shelf2 {
+    grid-auto-columns: 144px;
+    gap: 14px;
+    /* main's padding is 14px on a phone; the bleed matches it. */
+    padding-left: 14px;
+    padding-right: 14px;
+    margin-left: -14px;
+    margin-right: -14px;
+    scroll-padding-inline: 14px;
+  }
+}
+
+/* ---- tiles ---- */
+
+/* No card chrome: the artwork is the object, and a border around it competes with
+   the art for attention. Text sits underneath on the page background. */
+.tile {
+  display: block;
+  color: inherit;
+  min-width: 0;
+  cursor: pointer;
+}
+.tileart {
+  position: relative;
+  aspect-ratio: 1;
+  /* 15px everywhere an album is shown, so a cover is recognisably the same object on the
+     home page, an album page, a search result and the play bar. Artists override to a
+     circle; nothing else changes it. */
+  border-radius: var(--album-radius);
+  /* No overflow:hidden here, deliberately. The play button lives inside this
+     box, and clipping children to the radius sliced it — worst on circles,
+     where the corner it sits in is entirely outside the clip. The image
+     rounds itself instead, and a background is clipped to its own radius
+     natively, so nothing else needed the clip. */
+  background: linear-gradient(135deg, var(--bg2), var(--card));
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 2rem;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.tileart img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: inherit;
+}
+.tile:hover .tileart { transform: translateY(-3px); box-shadow: 0 12px 26px rgba(0, 0, 0, 0.45); }
+
+/* Artists are circles, which is the one shape convention worth borrowing outright:
+   it distinguishes a person from a record at a glance with no label. */
+.tile.round .tileart { border-radius: 50%; }
+
+.playover {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: var(--acc);
+  color: #fff;
+  font-size: 1rem;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+}
+.tile:hover .playover,
+.playover:focus-visible { opacity: 1; transform: translateY(0); }
+/* Touch has no hover, so the button is simply always there. */
+@media (hover: none) {
+  .playover { opacity: 1; transform: none; }
+}
+
+/* An add in flight. Stays visible without hover — the whole point is that the click was
+   seen — and dims slightly so it reads as busy rather than pressable. */
+.playover.working {
+  opacity: 1 !important;
+  transform: none !important;
+  cursor: progress;
+  background: color-mix(in srgb, var(--acc) 70%, transparent);
+}
+.tinyspin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: tinyspin 0.7s linear infinite;
+}
+@keyframes tinyspin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No spin; the colour change and the "adding…" caption still say it is working. */
+  .tinyspin { animation: none; opacity: 0.8; }
+}
+.tile.round .playover { right: 4px; bottom: 4px; }
+
+.tilemeta { padding: 9px 2px 0; }
+.tilemeta .t {
+  font-weight: 600;
+  font-size: 0.88rem;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tilemeta .s {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile.round .tilemeta { text-align: center; }
+
+/* ---- numbered top list ---- */
+
+/* Apple Music's top-songs pattern: a rank, a thumbnail, and the play affordance on
+   the row itself. Two columns when there is room, because a single column of ten
+   leaves half the page empty. */
+.toplist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 2px 28px;
+}
+.toprow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Room on the right for the … trigger, same as .songrow — without it the
+     button sits on the play count. */
+  padding: 7px 44px 7px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  min-width: 0;
+}
+.toprow:hover { background: var(--card); }
+.toprow .rank {
+  width: 20px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.toprow .thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 7px;
+  overflow: hidden;
+  flex: none;
+  background: var(--bg2);
+}
+.toprow .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.toprow .words { min-width: 0; flex: 1; }
+.toprow .t {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toprow .s {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toprow .count { color: var(--muted); font-size: 0.76rem; flex: none; }
+.toprow.playing .t { color: var(--acc); }
+
+/* ---- song preview (the album behind a recommendation) ---- */
+
+.previewhead {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.previewhead img {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: none;
+  background: var(--bg2);
+}
+.previewhead .t { font-weight: 700; }
+.previewhead .muted { font-size: 0.8rem; margin-top: 2px; }
+
+/* The recommended song, marked inside its album's listing. */
+.tracks li.hl .ti { color: var(--acc); font-weight: 650; }
+.tracks li.hl .n { color: var(--acc); }
+
+/* The 60px indent lines the artist page's listings up under its album art;
+   inside a modal there is nothing to line up with. */
+.modal .tracks { padding-left: 0; }
+
+/* ---- lyrics ---- */
+
+/* Phone-only floating trigger: the side cluster that hosts the desktop
+   button is hidden on touch, so the phone gets its own, pinned to the top
+   right of the player pane. Doubled selector on purpose: a bare class rule
+   loses the specificity tie against the later .pbicon rule and the button
+   showed up on desktop next to the real one. */
+/* ---- rating stars ---- */
+.stars { display: inline-flex; gap: 1px; }
+.star {
+  border: 0;
+  background: none;
+  padding: 0 1px;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1;
+}
+.star.lit { color: var(--warn); }
+.star:hover { transform: scale(1.15); }
+
+/* The one-tap rating dialog: five choices, one tap, gone. */
+.ratepop-back {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ratepop {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 14px;
+  padding: 18px 22px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 84vw;
+}
+.ratepop .t { font-weight: 650; font-size: 0.95rem; text-align: center; }
+
+/* The floated buttons are touch-only: one flex row at the top right, so a new
+   panel button costs no CSS — per-button pixel offsets used to mean renumbering
+   every one of them to add a fourth. */
+.playbar .pbtouch { display: none; }
+/* The playbar is already position:fixed, which makes it the anchor — do NOT
+   re-position it here: an earlier version set it relative and unpinned the
+   whole player from the bottom of the screen. */
+@media (hover: none) and (pointer: coarse) {
+  .playbar .pbtouch {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    position: absolute;
+    top: 6px;
+    right: 8px;
+  }
+  .playbar .pbtouch .pbicon { display: grid; }
+  .playbar .ratebtn-touch { font-size: 1.05rem; }
+  /* The inline five stars belong to the desktop bar; a thumb gets the popup. */
+  .pbside .stars { display: none; }
+}
+
+.lyricspanel {
+  position: fixed;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--bd);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  /* Desktop: a sheet on the right, clear of the header and the play bar. */
+  top: 72px;
+  right: 16px;
+  width: min(400px, calc(100vw - 32px));
+  bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+  transition: width 0.18s ease;
+}
+.lyricspanel.max { width: calc(100vw - 32px); }
+
+/* Phone: the whole screen above the play bar; no maximise, it already is. */
+@media (max-width: 820px) {
+  .lyricspanel,
+  .lyricspanel.max {
+    top: 0;
+    right: 0;
+    left: 0;
+    width: auto;
+    border-radius: 0;
+    border: none;
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+  .lyricsmax { display: none; }
+}
+
+.lyricshead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+.lyricshead .words { min-width: 0; flex: 1; }
+.lyricshead .t { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyricshead .s { font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.lyricsbody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 22px 45vh;
+  scrollbar-width: thin;
+}
+.lyricsnone { padding: 20px 4px; }
+
+.lyricline {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  padding: 7px 0;
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: color 0.25s ease, opacity 0.25s ease, transform 0.25s ease;
+}
+.lyricline.sung { opacity: 0.4; }
+.lyricline.active {
+  color: var(--fg);
+  opacity: 1;
+  transform: scale(1.02);
+  transform-origin: left center;
+}
+.lyricline:hover { opacity: 0.9; }
+.lyricline.plain {
+  cursor: default;
+  font-size: 1.05rem;
+  font-weight: 500;
+  opacity: 0.9;
+  color: var(--fg);
+  padding: 3px 0;
+}
+
+/* The instrumental wait: three dots that fill as the gap elapses. */
+.lyricgap { display: flex; gap: 9px; padding: 14px 2px; }
+.lyricgap .dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--fg);
+  opacity: 0.2;
+  transition: opacity 0.4s linear;
+}
+.lyricgap:not(.active) .dot { opacity: 0.15; width: 8px; height: 8px; }
+.lyricgap.active .dot { animation: dotbreathe 2.4s ease-in-out infinite; }
+@keyframes dotbreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+/* The admin plugin switchboard. */
+.plsection { margin: 22px 0 8px; font-size: 0.95rem; }
+.plsection:first-child { margin-top: 0; }
+.plsource { display: flex; gap: 8px; flex-wrap: wrap; max-width: 560px; }
+.plsource input { flex: 1; min-width: 180px; }
+.restartnote {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 560px;
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.pluginrows { display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
+.pluginrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd);
+  border-radius: 11px;
+  background: var(--card);
+}
+.pluginrow .words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pluginrow .t { font-weight: 600; }
+.pluginrow .s { font-size: 0.8rem; }
+.pillstate {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+.pillstate.on {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+/* ---- playlist picker ---- */
+
+/* One field, two jobs: filter the list, or name a new playlist. */
+.pickerfind {
+  width: 100%;
+  padding: 10px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--card);
+  color: var(--fg);
+  outline: none;
+  margin-bottom: 10px;
+}
+.pickerfind:focus { border-color: var(--acc); }
+
+.pickerlist {
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--card);
+}
+.pickerlist:empty { display: none; }
+.pickerrow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 13px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 45%, transparent);
+  color: var(--fg);
+  font-size: 0.92rem;
+  text-align: left;
+  cursor: pointer;
+}
+.pickerrow:last-child { border-bottom: none; }
+.pickerrow:hover:not(:disabled) { background: var(--acc); color: #fff; }
+.pickerrow:hover:not(:disabled) .c { color: color-mix(in srgb, #fff 80%, transparent); }
+.pickerrow:disabled { opacity: 0.5; cursor: default; }
+.pickerrow .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pickerrow .c { flex: none; font-size: 0.78rem; }
+
+.btn.newlist {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---- interactive release search ---- */
+
+/* The type-it-yourself box above the release list. Grows to the modal's width,
+   because an album name is longer than a search box's default guess. */
+.relsearch { display: flex; gap: 6px; margin-bottom: 10px; }
+/* Appearance comes from the global input rule; only the layout is local. */
+.relsearch input { flex: 1 1 auto; min-width: 0; font-size: 0.9rem; padding: 7px 10px; }
+.relsearch .btn { flex: 0 0 auto; }
+
+.rellist { display: flex; flex-direction: column; max-height: 62vh; overflow-y: auto; }
+.relrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 50%, transparent);
+}
+.relrow:last-child { border-bottom: none; }
+.relrow .words { min-width: 0; flex: 1; }
+.relrow .t {
+  font-weight: 600;
+  font-size: 0.86rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.relrow .s { font-size: 0.76rem; margin-top: 2px; }
+.relrow .s.why { color: var(--acc); }
+.relrow .acts { display: flex; gap: 6px; flex: none; align-items: center; }
+/* Crate rejected these; shown only on request, and dimmed so the ranked ones
+   still read as the recommendation. */
+.relrow.rejected { opacity: 0.6; }
+
+/* ---- library import progress ---- */
+
+.importlist {
+  max-width: 640px;
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 4px 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.importrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 12px;
+  font-size: 0.86rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 45%, transparent);
+}
+.importrow:last-child { border-bottom: none; }
+.importrow .st { width: 16px; flex: none; text-align: center; font-weight: 700; }
+.importrow.done .st { color: var(--ok); }
+.importrow.failed .st { color: var(--err); }
+.importrow.pending { opacity: 0.55; }
+.importrow .words { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.importrow .words em { font-style: normal; color: var(--muted); font-size: 0.78rem; }
+.importrow .words em.why { color: var(--err); }
+.importrow .pct { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; color: var(--acc); font-weight: 600; font-size: 0.8rem; }
+
+/* The batch bar: done in green, failed in red, the rest still open. */
+.impbar {
+  display: flex;
+  max-width: 640px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--bd);
+}
+.impbar .ok { background: var(--ok); }
+.impbar .bad { background: var(--err); }
+.impcounts { display: flex; gap: 14px; margin: 8px 0 4px; font-size: 0.82rem; flex-wrap: wrap; }
+.impcounts .c.ok { color: var(--ok); }
+.impcounts .c.bad { color: var(--err); }
+
+/* The in-flight marker: a small spinning arc, self-contained. */
+.importrow .spin {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--acc) 30%, transparent);
+  border-top-color: var(--acc);
+  animation: impspin 0.9s linear infinite;
+}
+@keyframes impspin { to { transform: rotate(360deg); } }
+
+/* ---- picker chips ---- */
+
+/* The genre and era pickers over the tag charts. Buttons, not tabs: several can
+   plausibly interest somebody in one sitting and switching is meant to feel
+   cheap. The row wraps rather than scrolls so every choice stays visible. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 14px;
+}
+.chip {
+  border: 1px solid var(--bd);
+  background: var(--card);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.chip:hover { border-color: color-mix(in srgb, var(--acc) 55%, var(--bd)); }
+.chip.on {
+  background: var(--acc);
+  border-color: var(--acc);
+  color: #fff;
+}
+.chip.yearbox {
+  width: 76px;
+  text-align: center;
+  cursor: text;
+}
+.chip.yearbox::placeholder { color: var(--muted); }
+.chip.yearbox:focus { outline: none; border-color: var(--acc); }
+
+/* ---- reason chips ---- */
+
+/* Why something was recommended, shown rather than hidden in a tooltip: a
+   suggestion nobody can interrogate reads as random. */
+.why {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  padding: 2px 8px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.why.here { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+
+/* A link inside a clickable row: it must not inherit the accent underline treatment, and it
+   must stop the row's own click from firing when followed. */
+.rowlink { color: inherit; }
+.rowlink:hover { color: var(--acc); text-decoration: underline; }
+
+/* ===========================================================================
+   iPhone
+   ---------------------------------------------------------------------------
+   Ordered by what actually bites on a phone rather than by breakpoint:
+   the play bar has to clear the home indicator, inputs must not trigger iOS's
+   focus zoom, tap targets have to be finger-sized, and the wide tables have to
+   drop their least useful columns instead of scrolling sideways.
+   =========================================================================== */
+
+html {
+  /* Stops iOS inflating type when the phone is rotated. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  -webkit-tap-highlight-color: transparent;
+  /* Keeps a rubber-band scroll inside the page instead of moving the whole view. */
+  overscroll-behavior-y: contain;
+}
+
+/* The play bar owns the bottom edge, so its safe-area padding is what keeps content
+   clear of the home indicator. */
+.playbar {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+}
+body {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+}
+
+/* The header is sticky, so it needs the top inset when running standalone with a
+   translucent status bar. */
+header.top {
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+}
+
+/* Narrow header: one row of brand · tabs · avatar, with the search on its own
+   row below. When the page is scrolled (the app stamps .compact on the header,
+   phones only) the search row folds away so the sticky bar is just the
+   essentials. */
+@media (max-width: 820px) {
+  header.top { flex-wrap: wrap; row-gap: 8px; }
+  .brand { order: 1; }
+  .tabs { order: 2; flex: 1; min-width: 0; justify-content: center; }
+  .tab { padding: 8px 7px; font-size: 0.88rem; }
+  .usermenu { order: 3; margin-left: 0; }
+  header.top input[type="search"] { order: 4; flex-basis: 100%; max-width: none; }
+  header.top.compact input[type="search"] { display: none; }
+  header.top.compact { row-gap: 0; }
+}
+
+/* Phone-width: every horizontal pixel matters or the third tab clips. */
+@media (max-width: 430px) {
+  header.top { padding-left: 12px; padding-right: 12px; gap: 8px; }
+  .tab { padding: 8px 5px; font-size: 0.82rem; }
+  .tab.active::after { left: 5px; right: 5px; }
+}
+
+@media (max-width: 760px) {
+  main { padding-left: 14px; padding-right: 14px; }
+
+  /* 16px is the threshold below which iOS zooms the page on focus. Anything the
+     user types into has to be at least that, whatever it looks like elsewhere. */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* Finger-sized transport. The seek bar gets its own full-width row above the
+     buttons rather than sharing one. */
+  .playbar { grid-template-columns: 1fr; gap: 6px; padding-top: 8px; }
+  .pbnow .art { width: 40px; height: 40px; }
+  .pbmeta .s:last-child { display: none; }
+  .pbbuttons { gap: 2px; justify-content: space-between; }
+  /* Sized by font-size, not padding: the icons scale from it and the min-width square
+     keeps the row evenly spaced. 44px is the Apple guidance for a tap target and 2em at
+     1.15rem lands just over it. */
+  .pbicon { font-size: 1.15rem; }
+  .pbicon.big { font-size: 1.6rem; }
+  .pbicon.ab { padding: 8px 7px; }
+  .pbtrack input[type="range"]::-webkit-slider-thumb { width: 15px; height: 15px; }
+
+  /* Type down a notch: 2.1rem headings crowd a 390px screen. */
+  .sechead { margin: 26px 0 10px; }
+  .sechead h2 { font-size: 1.15rem; }
+  .sechead .sub { display: none; }
+
+  /* Shelves get edge padding so a tile is never clipped flush against the frame,
+     and momentum scrolling because without it they feel dead. */
+  .shelf2,
+  .shelf {
+    -webkit-overflow-scrolling: touch;
+    scroll-padding-left: 14px;
+    padding-left: 2px;
+  }
+
+  .toplist { grid-template-columns: 1fr; }
+  .toprow { padding: 8px 6px; }
+  .toprow .count { display: none; }
+
+  /* Wide tables lose their least useful columns rather than scrolling sideways —
+     a horizontally scrolling table is the worst thing on a phone. */
+  .list th:nth-child(4),
+  .list td:nth-child(4),
+  .list th:nth-child(5),
+  .list td:nth-child(5) {
+    display: none;
+  }
+
+  /* The album table is the exception: its fourth column is Request/Open, the
+     only reason the row exists. Drop Type and Released instead — they reappear
+     under the title — and keep the button. Higher specificity beats the rule
+     above without needing !important. */
+  .list.albums th:nth-child(2),
+  .list.albums td:nth-child(2),
+  .list.albums th:nth-child(3),
+  .list.albums td:nth-child(3) {
+    display: none;
+  }
+  .list.albums th:nth-child(4),
+  .list.albums td:nth-child(4) {
+    display: table-cell;
+  }
+  .list.albums td { padding: 10px 4px; vertical-align: middle; }
+  .albumrow .sub { display: block; }
+  .albumrow { gap: 9px; }
+  .albumrow .thumb { width: 42px; height: 42px; }
+
+  /* Sixty pixels of indent is a desktop affordance; on a phone it is a third of
+     the song title. */
+  .tracks { padding: 2px 0 12px 4px; }
+  .tracks li { gap: 8px; }
+  .tracks .n { width: 18px; }
+  .list { font-size: 0.88rem; }
+  .list th, .list td { padding: 8px 6px; }
+
+  .admin { gap: 14px; }
+  .adminnav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .adminnav::-webkit-scrollbar { display: none; }
+  .adminlink { flex: none; white-space: nowrap; }
+  .adminlink .h { display: none; }
+
+  .stats { grid-template-columns: 1fr 1fr; }
+  .pair { grid-template-columns: 1fr; }
+  .hero2 { border-radius: 14px; }
+}
+
+@media (max-width: 420px) {
+  /* Last thing to go before the Get button starts wrapping. */
+  .tracks li .d { display: none; }
+  .shelf2 { grid-auto-columns: 132px; gap: 12px; }
+  .hero2 h1 { font-size: 1.35rem; }
+  .hero2 .cover { width: 108px; height: 108px; }
+  .pbmeta .t { font-size: 0.84rem; }
+  /* Three columns is all that fits; the rest of the transport is reachable from the
+     lock screen and media keys anyway. (.playbar prefix because the base .pbicon.ab rule
+     lives LATER in the file — equal specificity had this hide silently losing for months,
+     which nobody noticed until the DJ votes made the row genuinely tight.) */
+  .playbar .pbicon.ab { display: none; }
+}
+
+/* A tile is a tap target, so give it the whole finger on touch devices. */
+@media (hover: none) {
+  .toprow { padding: 10px 8px; }
+  .tile:active .tileart { transform: scale(0.97); }
+}
+
+/* ---- transport icons ---- */
+
+/* Icons are sized in em and coloured with currentColor, so every existing rule keeps
+   working: the font-size on .pbicon drives the glyph, and the accent colour applied to
+   an active toggle reaches the artwork. */
+.pbicon {
+  display: inline-grid;
+  place-items: center;
+  /* Square by default so a row of them is evenly spaced regardless of glyph width —
+     the thing emoji could never be relied on to do. */
+  min-width: 2em;
+  min-height: 2em;
+}
+.pbicon svg { display: block; }
+
+/* The primary action gets weight, which is what makes a transport readable at a glance. */
+.pbicon.big {
+  color: var(--fg);
+  min-width: 2.1em;
+  min-height: 2.1em;
+}
+.pbicon.big:hover { color: var(--acc); background: transparent; }
+
+/* A–B is an icon plus a state word, so it is the one control that is not square. */
+.pbicon.ab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px 8px;
+}
+.pbicon.ab svg { width: 1.15em; height: 1.15em; }
+.pbicon.ab span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+/* Labelled buttons — "Play all", "Shuffle" — need the icon on the text baseline rather
+   than sitting proud of it. */
+.btn svg {
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.16em;
+  margin-right: 0.34em;
+}
+
+/* The circular overlay on a tile: the icon is centred by grid, so no nudging. */
+.playover { display: grid; place-items: center; }
+.playover svg { width: 18px; height: 18px; }
+.tile.round .playover svg { width: 16px; height: 16px; }
+
+/* Row play buttons in a track list. */
+.pbicon.sm { min-width: 1.7em; min-height: 1.7em; }
+.pbicon.sm svg { width: 0.95em; height: 0.95em; }
+
+/* ---- one shape language for artwork ---- */
+
+/* Album covers: square, 15px, wherever they appear. The Art component takes a shape so a
+   search result knows whether it is showing a record or a person — previously everything
+   was the same rounded box and an artist was indistinguishable from an album at a glance. */
+.art.square { border-radius: var(--album-radius); }
+.art.circle { border-radius: 50%; }
+/* A card clips its children, so an inner radius is invisible unless the card yields. */
+.card:has(.art.circle) { background: transparent; border-color: transparent; }
+.card:has(.art.circle):hover { background: var(--card); }
+.card:has(.art.circle) .meta { text-align: center; }
+
+.pbnow .art { border-radius: 8px; }
+
+/* ---- library grids ---- */
+
+/* Four across, three down: the twelve-song preview the library page opens with. Collapses
+   to two on a phone rather than shrinking the art to a thumbnail. */
+.grid4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+}
+@media (max-width: 900px) { .grid4 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; } }
+
+/* The full artist and album listings: as many as fit, art-led. */
+.gridart {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+  gap: 20px 16px;
+}
+@media (max-width: 640px) { .gridart { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 16px 12px; } }
+
+/* ---- sort and pagination controls ---- */
+
+.sorts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sortbtn {
+  background: transparent;
+  border: 1px solid var(--bd);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sortbtn:hover { color: var(--fg); }
+.sortbtn.on { color: #fff; background: var(--acc); border-color: var(--acc); }
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 18px 0 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* ===========================================================================
+   Context menus, info panels, and the compact song row
+   =========================================================================== */
+
+.withmenu { position: relative; }
+
+/* The trigger fades in on hover on a pointer device and is always present on touch, where
+   there is no hover to reveal it and a long press is a hidden affordance on its own. */
+.menubtn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.withmenu:hover .menubtn,
+.menubtn:focus-visible { opacity: 1; }
+.menubtn:hover { color: var(--fg); background: var(--card); }
+@media (hover: none) {
+  .menubtn { opacity: 0.65; }
+}
+
+/* Tiles put the trigger over the artwork, top-right, opposite the play button. */
+.tile .menubtn {
+  top: 8px;
+  right: 8px;
+  transform: none;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
+  color: #fff;
+}
+.tile:hover .menubtn { opacity: 1; }
+
+.menupop {
+  position: fixed;
+  z-index: 200;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--bd);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.menuitem {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font-size: 0.86rem;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.menuitem:hover:not(:disabled) { background: var(--acc); color: #fff; }
+.menuitem:disabled { color: var(--muted); cursor: default; }
+.menuitem.danger { color: var(--err); }
+.menuitem.danger:hover { background: var(--err); color: #fff; }
+.menuitem em { font-style: normal; font-size: 0.72rem; opacity: 0.7; white-space: nowrap; }
+
+/* ---- modal ---- */
+
+.modalback {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  /* Clear of the play bar, which is above this in the stack on a phone. */
+  padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+}
+.modal {
+  width: min(560px, 100%);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.modalhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bd);
+}
+.modalhead h3 { margin: 0; font-size: 1rem; letter-spacing: -0.01em; }
+.modalbody { padding: 14px 16px 18px; overflow-y: auto; }
+
+.inforow {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 55%, transparent);
+  font-size: 0.86rem;
+}
+.inforow:last-child { border-bottom: none; }
+.inforow .k { color: var(--muted); }
+.inforow .v { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .inforow { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* ---- compact song row ---- */
+
+/* Small square cover, title beside it, album underneath. Used wherever a list of songs is
+   the content rather than a shelf — a playlist, the library preview, search results. Tiles
+   are for browsing; rows are for reading down a list, and a playlist is the latter. */
+.songrow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  /* 44px on the right: the … trigger is 30px wide and sits 6px in, so anything
+     less leaves the duration underneath it — 34px did exactly that. */
+  padding: 6px 44px 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  min-width: 0;
+}
+.songrow:hover { background: var(--card); }
+.songrow .cover {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg2);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.songrow .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.songrow .words { min-width: 0; flex: 1; }
+.songrow .t {
+  font-weight: 600;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.songrow .s {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.songrow .len { color: var(--muted); font-size: 0.76rem; flex: none; }
+.songrow.playing .t { color: var(--acc); }
+.songrow.notmine .t { color: var(--muted); }
+
+/* Two or three columns of rows where there is room — a playlist of forty is a long single
+   column otherwise. */
+.songrows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1px 22px;
+}
+
+/* A tile with a menu: the wrapper positions the trigger over the artwork, and the inner
+   WithMenu contributes only the button and popover, not layout. */
+.menuhost { position: relative; min-width: 0; }
+.menuhost > .withmenu { position: static; }
+.menuhost > .withmenu > .menubtn {
+  top: 8px;
+  right: 8px;
+  transform: none;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
+  color: #fff;
+}
+.menuhost:hover > .withmenu > .menubtn { opacity: 1; }
+.menuhost > .withmenu > .menubtn { opacity: 0; }
+@media (hover: none) {
+  .menuhost > .withmenu > .menubtn { opacity: 0.8; }
+}
+
+/* The song row's wrapper must not add its own box; only the trigger position. */
+.songrowwrap { min-width: 0; }
+
+/* ---- artist biography ---- */
+
+.bio { max-width: 70ch; margin: 14px 0 4px; }
+.bio p { margin: 0 0 8px; font-size: 0.9rem; line-height: 1.6; color: var(--fg); }
+.bio p.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- crash screen ---- */
+
+.crashed { max-width: 560px; margin: 60px auto; text-align: center; }
+.crashed h2 { margin: 0 0 8px; letter-spacing: -0.02em; }
+.crashed p { margin: 0 0 14px; font-size: 0.9rem; }
+.crashed pre {
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  color: var(--err);
+}
+.crashed .bar { justify-content: center; margin-top: 14px; }
+
+/* ---- your listening ---- */
+
+.statrow { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.stat {
+  flex: 1 1 120px;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.statv { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+.statl { font-size: 0.76rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+.vibe { margin-bottom: 18px; }
+
+/* Plays by hour. A bar chart small enough to read at a glance and not worth a library. */
+.clock { display: flex; align-items: flex-end; gap: 3px; height: 90px; margin-bottom: 20px; }
+.clockbar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.clockbar .fill {
+  background: var(--acc);
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: height .2s ease;
+}
+.clockbar .hr { font-size: 0.6rem; color: var(--muted); text-align: center; height: 12px; }
+
+/* Three side-by-side top-ten columns, stacking on a phone.
+   minmax(0, 1fr) rather than 1fr, and min-width on the children: a grid track defaults to
+   min-width:auto, so the nowrap song titles inside refused to shrink and pushed the whole
+   page into horizontal scroll on a phone. */
+.listcols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 8px; }
+.listcols > div { min-width: 0; }
+@media (max-width: 820px) { .listcols { grid-template-columns: minmax(0, 1fr); } }
+
+.statline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 55%, transparent);
+  background: none;
+  border-left: 0; border-right: 0; border-top: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.statline:hover { color: var(--acc); }
+.statline .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statline .v { font-variant-numeric: tabular-nums; color: var(--muted); flex: none; }
+
+/* ---- complete your albums ---- */
+
+.gaprow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd) 55%, transparent);
+}
+.gaprow .words { flex: 1; min-width: 0; }
+.gaprow .t { display: block; font-weight: 600; text-decoration: none; color: inherit; }
+.gaprow .t:hover { color: var(--acc); }
+.gaprow .s { font-size: 0.8rem; }
+.gapart { width: 44px; height: 44px; flex: none; border-radius: 6px; overflow: hidden; display: block; }
+.gapart img { width: 100%; height: 100%; object-fit: cover; }
+
+@media (max-width: 620px) {
+  /* Four stat cards would be four cramped columns; two rows of two reads better. */
+  .stat { flex-basis: calc(50% - 5px); }
+  .clock { height: 70px; }
+}
+
+/* ---- Song characteristics ---------------------------------------------------
+ *
+ * A profile is fifty-odd rows, so the row has to be cheap: name, bar, slider, number. The bar
+ * is what makes a vector readable at a glance — a column of numbers is a spreadsheet, a column
+ * of bars is a shape you can recognise across two tracks.
+ */
+.chars {
+  border-top: 1px solid var(--bd);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.charhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.charhead .lbl { font-weight: 600; font-size: 0.9rem; }
+.charhead .spacer { flex: 1; }
+.charstate {
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Only two states earn a colour: one is waiting (keep looking) and one needs attention. */
+.charstate.analysing,
+.charstate.pending { color: var(--acc); }
+.charstate.failed { color: var(--bad); }
+
+.chargroup { margin-top: 10px; }
+.chargroup .grouphead {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.charrow {
+  display: grid;
+  /* minmax(0,…) on the flexible tracks: a long name must not widen the grid past the modal,
+     and 1fr alone defaults to min-width:auto, which is exactly how it would. */
+  grid-template-columns: minmax(0, 11em) minmax(0, 1fr) 2.6em;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 0.82rem;
+}
+.charrow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A hand-set value gets one accent dot, not a badge. It is a footnote, not a headline. */
+.charrow .nm .by {
+  color: var(--acc);
+  font-style: normal;
+  font-weight: 700;
+  margin-left: 4px;
+}
+/*
+ * A hairline in the text colour, not a filled accent block.
+ *
+ * Fifty saturated blue bars read as a dashboard demanding to be acted on, when what this
+ * actually is, is text with a magnitude beside it. Low-opacity foreground sits behind the
+ * words instead of in front of them, and works in both themes without a second rule.
+ */
+.charrow .bar {
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  overflow: hidden;
+}
+.charrow .bar i {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+/* The one thing on the row somebody decided is the one thing that earns the accent. */
+.charrow .bar.mine i { background: var(--acc); }
+.charrow .num { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+
+/* Edit mode: the slider replaces the bar in the same column, so nothing reflows. */
+.charrow .wt {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--acc);
+}
+.charmore { margin-top: 10px; }
+
+/* "Closest by sound": the same row shape, but the whole row plays the track. */
+.simrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5em 2.6em;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.simrow:hover .nm { color: var(--acc); }
+.simrow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.simrow .bar {
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  overflow: hidden;
+}
+.simrow .bar i {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+.simrow:hover .bar i { background: var(--acc); }
+.simrow .num { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+
+.charsweep { margin: 10px 0; }
+.charsweep .statline { margin-bottom: 8px; }
+.charsweep .statline .bad { color: var(--bad); }
+
+@media (max-width: 560px) {
+  /* The name gives up room rather than the bar: at 360px a truncated label still identifies
+     the dimension, whereas a 2em bar shows nothing. */
+  .charrow { grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 2.6em; }
+}
+
+/* ---- the DJ ---- */
+
+/*
+ * The vote cluster in the transport row. Icons only by default; the text labels and the
+ * desktop-extra buttons (.lg — Reset, Insight) appear together on a wide fine-pointer
+ * display, because that is the one regime with room for words. A hairline separates the DJ
+ * from the transport so two thumbs-adjacent icon groups read as two ideas.
+ */
+.pbdj {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--bd);
+}
+.pbdj .lbl { display: none; }
+.pbdj .pbicon.lg { display: none; }
+/*
+ * WIDTH is the gate, not pointer type. "Larger displays get the words and the extra buttons"
+ * is about room, and an iPad-sized touch screen has it — a hover/pointer condition would have
+ * hidden Reset from exactly the wall-mounted tablets this UI suits. Two tiers: the desktop
+ * extras and End's words arrive at 900px; the vote and Reset labels wait for 1600px. The
+ * numbers are measured, not guessed — the fully-labelled row is 702px, and the centre grid
+ * column only reaches that around 1500 wide (601px at 1280, 681px at 1440). The thumbs are
+ * self-explanatory with tooltips; End is the one button whose words carry the meaning, so its
+ * label comes first.
+ */
+@media (min-width: 900px) {
+  .pbdj .pbicon { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .pbdj .pbicon.lg { display: inline-flex; }
+  .pbdj .lbl { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+  .pbdj .pbicon.end .lbl { display: inline; }
+}
+@media (min-width: 1600px) {
+  .pbdj .lbl { display: inline; }
+}
+/* The 760px single-column bar packs 6 transport buttons + the votes; keep the DJ tight. */
+@media (max-width: 760px) {
+  .pbdj { margin-left: 4px; padding-left: 6px; gap: 0; }
+}
+
+/*
+ * The DJ's insight sheet. Same recipe as the lyrics panel — fixed right sheet, clear of the
+ * header and the play bar — and desktop-only by construction: the button that opens it is
+ * inside the .lg media gate above, so no phone variant exists to design.
+ */
+.djpanel {
+  position: fixed;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--bd);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  top: 72px;
+  right: 16px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 72px - 100px - env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+}
+.djhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+.djhead .words { flex: 1; min-width: 0; }
+.djhead .t { font-weight: 700; }
+.djhead .s { font-size: 0.8rem; }
+.djbody { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 18px; }
+.djbody p { margin: 0; line-height: 1.5; }
+.djrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.djrow .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; flex: none; }
+.djchip {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+}
+.djchip.in {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.djchip.out {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+}
+.djsay { font-size: 0.75rem; }
+.djactions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* A pressed thumb stays lit for the song it judged — in the vote's own colour, the same
+   green/red the old panel's big buttons used, because "I liked this" is not the same
+   statement as "this toggle is on". */
+.pbdj .pbicon.up.on { color: var(--ok); }
+.pbdj .pbicon.down.on { color: var(--err); }
+
+/* Up next inside the insight sheet: information, not a control — one quiet line. */
+.djnext { font-size: 0.88rem; }
+.djnext .k {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 6px;
+}
+
+/* Recipe "Feel" chips: the band shows in the vote's own direction, so a glance reads which way
+   a dimension is pointing without opening the tooltip. */
+.pchip.on.high { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.pchip.on.low { border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+.chargroup { margin-top: 8px; }
+.chargroup > .muted { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.linkish {
+  background: none;
+  border: none;
+  padding: 4px 0;
+  color: var(--acc);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  align-self: flex-start;
+}
