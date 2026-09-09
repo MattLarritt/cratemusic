@@ -13,6 +13,8 @@ single application that does the library, the acquisition, the identification,
 the streaming and the recommendation itself, because splitting those across four
 tools is what made them all disagree.
 
+![Screenshot](https://github.com/MattLarritt/cratemusic/blob/master/screens/Screenshot%20-%20play.png)
+
 ---
 
 ## What it does
