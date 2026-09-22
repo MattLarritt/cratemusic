@@ -155,6 +155,9 @@ One caveat: **do not put a login gateway in front of `/rest`** — Subsonic clie
 authenticate on every request and cannot follow an interactive login. Gate the
 app, leave `/rest` to crate's own auth, which does its own throttling.
 
+New to this side of self-hosting? [Who your server trusts](docs/network-security.md)
+explains why this setting exists, and two related traps, in plain language.
+
 ### Optional: a local MusicBrainz mirror
 
 crate is gated to MusicBrainz's one-request-per-second limit, which makes bulk
