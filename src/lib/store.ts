@@ -245,8 +245,16 @@ export class Store {
       .run(ip, username.trim().toLowerCase());
   }
 
-  /** Seconds remaining on a lockout, or 0 when not locked out. */
-  lockoutRemaining(ip: string, username: string): number {
+  /**
+   * Recent failures AND any remaining lockout, in one query.
+   *
+   * The Subsonic API has no sessions — every single request re-authenticates — so this
+   * runs on the hot path: a phone working through an album is hundreds of calls. Getting
+   * the failure count back alongside the lockout lets that caller skip clearFails() when
+   * there is nothing to clear, which keeps the ordinary case at one indexed read and no
+   * writes at all.
+   */
+  loginFailState(ip: string, username: string): { fails: number; lockedForS: number } {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS n, MAX(at) AS last FROM login_attempts
@@ -256,8 +264,14 @@ export class Store {
       n: number;
       last: number | null;
     };
-    if (row.n < MAX_FAILS || !row.last) return 0;
-    return Math.max(0, row.last + FAIL_WINDOW_S - nowSec());
+    const lockedForS =
+      row.n < MAX_FAILS || !row.last ? 0 : Math.max(0, row.last + FAIL_WINDOW_S - nowSec());
+    return { fails: row.n, lockedForS };
+  }
+
+  /** Seconds remaining on a lockout, or 0 when not locked out. */
+  lockoutRemaining(ip: string, username: string): number {
+    return this.loginFailState(ip, username).lockedForS;
   }
 
   // ---- cache -------------------------------------------------------------

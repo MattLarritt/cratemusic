@@ -41,7 +41,8 @@ import { PageWarmer } from './lib/warm.js';
 import { refreshSeedsFromLibrary } from './lib/taste.js';
 import { apiRoutes } from './routes/api.js';
 import { artRoutes } from './routes/art.js';
-import { authRoutes, makeIsAuthed } from './routes/auth.js';
+import { authRoutes, makeIsAuthed, TRUSTED_PROXIES } from './routes/auth.js';
+import { scrubUrl } from './lib/logscrub.js';
 
 /**
  * An optional env var, treating empty as absent.
@@ -175,7 +176,32 @@ const sab = new Sab(settings);
 const qbit = new Qbit(settings);
 const lastfm = new LastFm(store, settings);
 
-const app = Fastify({ logger: { level: process.env.CRATE_LOG ?? 'info' }, trustProxy: true });
+const app = Fastify({
+  logger: {
+    level: process.env.CRATE_LOG ?? 'info',
+    serializers: {
+      // Fastify's default req serialiser, with the URL put through scrubUrl first.
+      req(req) {
+        return {
+          method: req.method,
+          url: scrubUrl(req.url ?? ''),
+          host: req.host,
+          remoteAddress: req.ip,
+          remotePort: req.socket?.remotePort,
+        };
+      },
+    },
+  },
+  /*
+   * The same list clientIp() uses, so Fastify's own req.ip cannot be forged either —
+   * anything reading req.ip gets the same answer as the lockout does.
+   *
+   * `false` when nothing is configured. trustProxy: true told Fastify to believe an
+   * X-Forwarded-For from any peer whatsoever, which for a directly-reachable crate means
+   * believing the client about itself.
+   */
+  trustProxy: TRUSTED_PROXIES.length > 0 ? (process.env.CRATE_TRUSTED_PROXIES ?? '') : false,
+});
 
 /*
  * Every plugin this process runs: the compiled-in registry plus whatever is installed under
