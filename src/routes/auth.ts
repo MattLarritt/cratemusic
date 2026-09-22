@@ -1,5 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Store, User } from '../lib/store.js';
+import { type Cidr, isTrustedProxy, parseTrustedProxies } from '../lib/trustedproxy.js';
+
+/**
+ * Proxies whose forwarding headers are believed, from `CRATE_TRUSTED_PROXIES`.
+ *
+ * Read once at import. This is deployment topology rather than a runtime setting, and an
+ * operator moving crate behind a different proxy is restarting it anyway.
+ *
+ * Empty by default, which means no header is believed at all. See clientIp().
+ */
+export const TRUSTED_PROXIES: readonly Cidr[] = parseTrustedProxies(
+  process.env.CRATE_TRUSTED_PROXIES ?? '',
+);
 
 interface Deps {
   store: Store;
@@ -7,25 +20,45 @@ interface Deps {
   cookieSecure: boolean;
 }
 
-/** The client's address, for lockout bookkeeping. */
-export function clientIp(req: FastifyRequest): string {
-  // Cloudflare overwrites CF-Connecting-IP unconditionally, so it is a single
-  // authoritative value rather than a chain to reason about. It is only
-  // trustworthy while the request genuinely arrived via Cloudflare, which is what
-  // the cloudflare-only allowlist on this host's Traefik routers enforces.
+/**
+ * The client's address, used to key the sign-in lockout.
+ *
+ * This value decides whose failed attempts count together, so a caller able to choose it
+ * can defeat the lockout entirely: rotate the header, get a fresh bucket, and a limit of
+ * six attempts per fifteen minutes limits nothing at all. Getting it wrong is therefore
+ * not a logging inconvenience — it silently removes a control that looks present.
+ *
+ * The one thing a caller cannot choose is the address it opened the socket from. So that
+ * is the answer unless the peer is a proxy the operator has explicitly named, and with
+ * nothing configured every forwarding header is ignored. That default is deliberately
+ * the safe one: crate reached directly is the case where believing a header is worst,
+ * and it is also the case an operator is least likely to have thought about.
+ *
+ * Once the peer IS trusted, the order is:
+ *
+ *   1. `CF-Connecting-IP`, if present. A CDN that sets this overwrites any inbound
+ *      value, so it is one authoritative address rather than a chain to reason about.
+ *   2. Otherwise the RIGHT-most `X-Forwarded-For` entry — the hop nearest the proxy that
+ *      just spoke to us. A proxy appends the peer it actually saw to whatever chain
+ *      arrived, so the left-most entry is whatever the client wrote and the right-most
+ *      is the only one attested by something we trust.
+ *
+ * Never `req.ip`: with trustProxy enabled Fastify derives it from the LEFT-most entry,
+ * which is precisely the forgeable one this function exists to avoid.
+ *
+ * `trusted` is a parameter so the decision can be tested without touching the
+ * environment; production callers use the configured list.
+ */
+export function clientIp(
+  req: FastifyRequest,
+  trusted: readonly Cidr[] = TRUSTED_PROXIES,
+): string {
+  const peer = req.socket.remoteAddress ?? 'unknown';
+  if (!isTrustedProxy(peer, trusted)) return peer;
+
   const cf = String(req.headers['cf-connecting-ip'] ?? '').trim();
   if (cf) return cf;
 
-  // Otherwise take the RIGHT-most entry, not the left-most.
-  //
-  // Traefik's websecure entryPoint lists Cloudflare's ranges in
-  // forwardedHeaders.trustedIPs, so for a request through Cloudflare it preserves
-  // the inbound X-Forwarded-For instead of replacing it — and Cloudflare appends
-  // the peer it actually saw to whatever chain the client sent. That makes the
-  // left-most entry attacker-controlled and the right-most one not. Reading the
-  // left-most, which was safe only while this host was LAN-only, would hand an
-  // internet client control of its own lockout key and make the brute-force limit
-  // bypassable by rotating a single header.
   const chain = String(req.headers['x-forwarded-for'] ?? '')
     .split(',')
     .map((part) => part.trim())
@@ -33,9 +66,7 @@ export function clientIp(req: FastifyRequest): string {
   const nearest = chain[chain.length - 1];
   if (nearest) return nearest;
 
-  // Not req.ip: trustProxy is on, so Fastify derives that from the left-most
-  // X-Forwarded-For too and it carries the same forgery problem.
-  return req.socket.remoteAddress ?? 'unknown';
+  return peer;
 }
 
 /**

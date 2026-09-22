@@ -134,11 +134,26 @@ annotated list; the ones worth having:
 
 ### Behind a reverse proxy
 
-crate binds to `127.0.0.1` by default because it has no rate limiting of its own.
-Put it behind your proxy and forward the real client IP. One caveat: **do not put
-a login gateway in front of `/rest`** — Subsonic clients authenticate on every
-request and cannot follow an interactive login. Gate the app, leave `/rest` to
-crate's own auth.
+crate binds to `127.0.0.1` by default because it has no general rate limiting of
+its own. Put it behind your proxy and forward the real client IP.
+
+If you do, **set `CRATE_TRUSTED_PROXIES` to your proxy's address or range**:
+
+```
+CRATE_TRUSTED_PROXIES=172.18.0.0/16
+```
+
+crate throttles failed sign-ins per client address, and it will only take that
+address from `CF-Connecting-IP` or `X-Forwarded-For` when the peer that sent them
+is on this list. Unset, those headers are ignored and the connecting address is
+used instead — which is correct for a directly-reachable crate, where a header is
+simply whatever the caller chose to write, but means that behind a proxy every
+request looks like it came from the proxy and one person's failures throttle
+everybody. Accepts addresses or CIDR, IPv4 or IPv6, comma- or space-separated.
+
+One caveat: **do not put a login gateway in front of `/rest`** — Subsonic clients
+authenticate on every request and cannot follow an interactive login. Gate the
+app, leave `/rest` to crate's own auth, which does its own throttling.
 
 ### Optional: a local MusicBrainz mirror
 
