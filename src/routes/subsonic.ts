@@ -48,6 +48,7 @@ import { norm } from '../lib/release.js';
 import type { Playlist, UserLibrary } from '../lib/userlib.js';
 import type { PlaylistArt } from '../lib/playlistart.js';
 import type { Recommender } from '../lib/recommend.js';
+import { clientIp } from './auth.js';
 
 const API_VERSION = '1.16.1';
 const SERVER = 'crate';
@@ -213,15 +214,58 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       return null;
     }
 
+    /*
+     * The same lockout the web sign-in uses.
+     *
+     * This path had none, which made the web limit decorative: anyone with a wordlist
+     * pointed it at /rest instead and was never slowed down. There are no sessions here
+     * — every Subsonic call re-authenticates — so the throttle belongs inside the
+     * per-request check rather than around a form.
+     *
+     * Cost matters on this path. One SELECT reads the failure count and the lockout
+     * together, and clearFails() runs only when there is something to clear, so the
+     * ordinary case of correct credentials is one indexed read and no writes.
+     */
+    const ip = clientIp(req);
+    const state = store.loginFailState(ip, username);
+    if (state.lockedForS > 0) {
+      const mins = Math.ceil(state.lockedForS / 60);
+      // BAD_CREDENTIALS rather than a new code: Subsonic has no rate-limit error, and
+      // clients that meet an unknown one tend to report "server unreachable" instead of
+      // showing the message, which hides the very thing the user needs to read.
+      fail(req, reply, ERR.BAD_CREDENTIALS, `Too many failed attempts — try again in ${mins} min`);
+      return null;
+    }
+
+    /**
+     * Record the failure, send the error, hand back the null the caller returns.
+     *
+     * Every failing branch goes through here so a future one cannot quietly skip the
+     * bookkeeping and reopen the hole.
+     */
+    const reject = (code: number, message: string): null => {
+      store.recordFail(ip, username);
+      fail(req, reply, code, message);
+      return null;
+    };
+
+    /** Clear any recorded failures and hand back the authenticated user. */
+    const accept = (user: User): User => {
+      if (state.fails > 0) store.clearFails(ip, username);
+      return user;
+    };
+
     // --- token auth -------------------------------------------------------
     if (q.t && q.s) {
       const user = store.userByName(username);
       const secret = user?.stream_password ?? '';
       if (!user || !user.enabled) {
-        fail(req, reply, ERR.BAD_CREDENTIALS, 'Wrong username or password');
-        return null;
+        return reject(ERR.BAD_CREDENTIALS, 'Wrong username or password');
       }
       if (!secret) {
+        // Deliberately NOT counted as a failure. The credentials were never wrong — the
+        // account simply has no streaming password yet — and counting it would lock
+        // someone out for following the instructions this very message gives them.
         fail(
           req,
           reply,
@@ -233,10 +277,9 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       }
       const expect = createHash('md5').update(secret + q.s).digest('hex');
       if (expect !== String(q.t).toLowerCase()) {
-        fail(req, reply, ERR.BAD_CREDENTIALS, 'Wrong username or password');
-        return null;
+        return reject(ERR.BAD_CREDENTIALS, 'Wrong username or password');
       }
-      return user;
+      return accept(user);
     }
 
     // --- password auth ----------------------------------------------------
@@ -250,22 +293,22 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       try {
         password = Buffer.from(password.slice(4), 'hex').toString('utf8');
       } catch {
-        fail(req, reply, ERR.BAD_CREDENTIALS, 'Wrong username or password');
-        return null;
+        return reject(ERR.BAD_CREDENTIALS, 'Wrong username or password');
       }
     }
 
     // The real crate password, against the real argon2id hash.
     const byAccount = await store.checkPassword(username, password);
-    if (byAccount) return byAccount;
+    if (byAccount) return accept(byAccount);
 
     // Or the streaming password, so somebody who set one can use it everywhere rather
     // than remembering which client wants which.
     const user = store.userByName(username);
-    if (user?.enabled && user.stream_password && user.stream_password === password) return user;
+    if (user?.enabled && user.stream_password && user.stream_password === password) {
+      return accept(user);
+    }
 
-    fail(req, reply, ERR.BAD_CREDENTIALS, 'Wrong username or password');
-    return null;
+    return reject(ERR.BAD_CREDENTIALS, 'Wrong username or password');
   }
 
   /**
