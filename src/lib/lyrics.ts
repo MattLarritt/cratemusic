@@ -24,13 +24,14 @@ import { parseFile } from 'music-metadata';
 import { File as TagFile } from 'node-taglib-sharp';
 import { basename } from 'node:path';
 import { norm } from './release.js';
+import { USER_AGENT } from './version.js';
 
 /**
  * LRCLIB is community-run, asks clients to identify themselves, and asks them not to
  * hammer it. One request per second with a real contact is the polite floor.
  */
 const LRCLIB = 'https://lrclib.net/api/get';
-const USER_AGENT = 'crate/0.1 ( https://github.com/MattLarritt/cratemusic )';
+
 const MIN_GAP_MS = 1100;
 
 export interface LyricLine {
