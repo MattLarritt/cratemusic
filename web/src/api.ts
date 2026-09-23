@@ -782,8 +782,12 @@ export const api = {
     put<{ ok: true; settings: AdminSettings }>('/api/admin/settings', patch),
   clearSetting: (key: string) =>
     post<{ ok: true; settings: AdminSettings }>('/api/admin/settings/clear', { key }),
-  testConnection: (what: 'sab' | 'prowlarr' | 'lastfm' | 'qbit' | 'mbmirror' | 'acoustid' | 'openai') =>
-    post<{ ok: boolean; detail: string }>(`/api/admin/test/${what}`, {}),
+  // `draft` carries the settings as they stand in the form, unsaved, so a value can be
+  // checked before it is committed. Omit it to test what is stored.
+  testConnection: (
+    what: 'sab' | 'prowlarr' | 'lastfm' | 'qbit' | 'mbmirror' | 'acoustid' | 'openai',
+    draft?: Record<string, unknown>,
+  ) => post<{ ok: boolean; detail: string }>(`/api/admin/test/${what}`, draft ? { draft } : {}),
   testSearch: (artist: string, album: string, trackCount?: number) =>
     post<SearchProbe>('/api/admin/test/search', { artist, album, trackCount }),
 

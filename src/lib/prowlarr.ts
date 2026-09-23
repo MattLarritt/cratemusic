@@ -11,7 +11,7 @@
  * FLAC release filed under plain Audio would otherwise be invisible.
  */
 
-import type { Settings } from './settings.js';
+import type { ConfigSource } from './settings.js';
 
 export interface Candidate {
   title: string;
@@ -61,7 +61,7 @@ export class Prowlarr {
    * so changing them on the admin page takes effect without recreating the
    * container. The cost is one cached map lookup per search.
    */
-  constructor(private settings: Settings) {}
+  constructor(private settings: ConfigSource) {}
 
   get configured(): boolean {
     const c = this.settings.all();

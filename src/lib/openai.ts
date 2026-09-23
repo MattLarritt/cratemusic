@@ -1,5 +1,5 @@
 import { postJson } from './http.js';
-import type { Settings } from './settings.js';
+import type { ConfigSource } from './settings.js';
 import type { AnalysisInput, AnalysisResult, CharacteristicDef } from './characteristics.js';
 import type { Assignment, MatchFile, MatchTrack } from './trackmatch.js';
 
@@ -45,7 +45,7 @@ interface ChatResponse {
 
 export class OpenAi {
   constructor(
-    private settings: Settings,
+    private settings: ConfigSource,
     private warn: (msg: string) => void = () => {},
   ) {}
 

@@ -10,7 +10,7 @@
  * logical failure, so every call has to check the body rather than the code.
  */
 
-import type { Settings } from './settings.js';
+import type { ConfigSource } from './settings.js';
 
 export interface SabJob {
   nzoId: string;
@@ -50,7 +50,7 @@ interface HistorySlot {
 
 export class Sab {
   /** Config read per call, so an admin edit applies without a container recreate. */
-  constructor(private settings: Settings) {}
+  constructor(private settings: ConfigSource) {}
 
   get configured(): boolean {
     const c = this.settings.all();

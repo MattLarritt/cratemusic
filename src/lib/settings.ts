@@ -170,6 +170,44 @@ export interface Config {
 /** Keys whose values must never leave the server. */
 export const SECRET_KEYS: (keyof Config)[] = ['sabKey', 'prowlarrKey', 'lastfmKey', 'qbitPassword', 'acoustidKey', 'openaiKey'];
 
+/**
+ * All a service client needs: the configuration as it stands right now.
+ *
+ * Settings satisfies this, and so does a throwaway overlay holding unsaved form values —
+ * which is the point. The admin page's connection tests could only ever prove what was
+ * already in the database, so finding a typo meant saving the typo first. Depending on
+ * this rather than on Settings lets a test run against what is on screen.
+ */
+export interface ConfigSource {
+  all(): Config;
+}
+
+/**
+ * Lay unsaved form values over the stored configuration, for a connection test.
+ *
+ * Two rules, both of which matter:
+ *
+ *  - Only `writable` keys are honoured. The body comes from a browser, and a test that
+ *    could set any key would be a way to make the server act on arbitrary configuration.
+ *  - An EMPTY secret means "keep the stored one", exactly as it does on save. The form
+ *    never receives secrets — redacted() blanks them and sends a hint instead — so an
+ *    untouched password field arrives empty, and reading that as "no password" would
+ *    fail every test where the operator had only changed the URL.
+ */
+export function draftConfig(
+  base: Config,
+  draft: Record<string, unknown>,
+  writable: (keyof Config)[],
+): Config {
+  const merged = { ...base } as unknown as Record<string, unknown>;
+  for (const [k, v] of Object.entries(draft)) {
+    if (!writable.includes(k as keyof Config)) continue;
+    if (SECRET_KEYS.includes(k as keyof Config) && (v === '' || v === null)) continue;
+    merged[k] = v;
+  }
+  return merged as unknown as Config;
+}
+
 const DEFAULT_FORMATS = ['flac', 'mp3', 'm4a', 'ogg', 'opus', 'aac', 'alac', 'ape', 'wav'];
 const DEFAULT_DISQUALIFY = [
   'discography',
