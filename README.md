@@ -42,7 +42,9 @@ tools is what made them all disagree.
 
 **Playing it**
 - Web player, plus a full **OpenSubsonic API** — so any Subsonic client
-  (phone, car, desktop) works, filtered to that user's own library
+  (phone, car, desktop) works, filtered to that user's own library. Clients that
+  ask for a format or a bitrate ceiling (`format=mp3&maxBitRate=128`) get it
+  transcoded on the fly; everything else is served as the untouched original
 - **Intelligent Shuffle**: a DJ over your own library that reads the room and
   takes votes, rather than shuffling at random
 - **Dynamic playlists** that store a *recipe*, not rows, and deal fresh every time

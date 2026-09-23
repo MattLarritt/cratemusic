@@ -50,6 +50,7 @@ import type { PlaylistArt } from '../lib/playlistart.js';
 import type { Recommender } from '../lib/recommend.js';
 import { clientIp } from './auth.js';
 import { VERSION_SHORT } from '../lib/version.js';
+import { plan, spawnTranscode } from '../lib/transcode.js';
 
 const API_VERSION = '1.16.1';
 const SERVER = 'crate';
@@ -929,6 +930,77 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     }
 
     const type = MIME[extname(t.path).toLowerCase()] ?? 'application/octet-stream';
+    const q = req.query as Record<string, string>;
+
+    /*
+     * Transcode only when the client actually asked for something it is not getting.
+     *
+     * plan() decides; everything below the branch is the original byte-for-byte path,
+     * untouched. That split is deliberate — a client happy with the file as it stands
+     * keeps its Range requests, its seeking and its exact bytes.
+     */
+    const p = plan({
+      path: t.path,
+      sizeBytes: size,
+      durationS: t.durationS ?? null,
+      format: q.format,
+      maxBitRate: Number(q.maxBitRate) || 0,
+      sourceMime: type,
+    });
+
+    if (p.transcode) {
+      /*
+       * A transcoded stream has no length until it exists, so there is nothing honest
+       * to put in Content-Length and no way to answer a Range. Saying
+       * Accept-Ranges: none and ignoring the header beats answering a seek with bytes
+       * that are not where the client believes they are.
+       *
+       * Subsonic's own timeOffset covers seeking, and ffmpeg is handed it directly.
+       */
+      const offset = Number(q.timeOffset) || 0;
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': p.mime,
+        'Accept-Ranges': 'none',
+        'X-Crate-Transcode': p.reason,
+      });
+
+      const ff = spawnTranscode(t.path, p, { timeOffsetS: offset });
+      ff.stdout.pipe(reply.raw);
+      ff.on('error', () => reply.raw.destroy());
+
+      /*
+       * SIGKILL when the listener goes away — the part that would have hurt most in
+       * production.
+       *
+       * Skipping a track closes the socket while ffmpeg carries on encoding into a
+       * pipe nobody is reading. A handful of those pin a machine at 100% CPU with
+       * nothing in the logs to explain it. SIGTERM is not enough, since ffmpeg may be
+       * mid-write and ignore it, so this does not negotiate.
+       */
+      reply.raw.on('close', () => {
+        if (ff.exitCode === null) ff.kill('SIGKILL');
+      });
+      return;
+    }
+
+    /*
+     * A zero-byte file made end = size - 1 = -1, which createReadStream rejects. The
+     * reply had already been hijacked, so the throw left the socket open with headers
+     * sent and the client waiting forever — a hang rather than an error. Reachable
+     * from a truncated import or a download that failed part-way.
+     */
+    if (size === 0) {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': type,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '0',
+      });
+      reply.raw.end();
+      return;
+    }
+
     const m = String(req.headers.range ?? '').match(/^bytes=(\d*)-(\d*)$/);
 
     let start = 0;
