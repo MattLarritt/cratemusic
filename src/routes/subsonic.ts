@@ -49,6 +49,7 @@ import type { Playlist, UserLibrary } from '../lib/userlib.js';
 import type { PlaylistArt } from '../lib/playlistart.js';
 import type { Recommender } from '../lib/recommend.js';
 import { clientIp } from './auth.js';
+import { VERSION_SHORT } from '../lib/version.js';
 
 const API_VERSION = '1.16.1';
 const SERVER = 'crate';
@@ -111,6 +112,20 @@ const albumParts = (id: string): [string, string] | null => {
   return null;
 };
 
+/**
+ * One page of results, per Subsonic's offset/count pairs.
+ *
+ * The offsets were accepted and then ignored, so every page returned page one. That is
+ * worse than not implementing paging: a client walking through results collects the
+ * same rows over and over with nothing anywhere saying so, and a twenty-track album
+ * arrives as sixty. Past the end returns nothing, which is how a client knows to stop.
+ */
+function page<T>(rows: T[], offset: unknown, count: unknown, fallback: number): T[] {
+  const from = Math.max(Number(offset ?? 0) || 0, 0);
+  const size = Math.max(Number(count ?? fallback) || fallback, 0);
+  return rows.slice(from, from + size);
+}
+
 function xmlEscape(v: string): string {
   return v
     .replace(/&/g, '&amp;')
@@ -135,8 +150,22 @@ function toXml(name: string, node: unknown): string {
   const attrs: string[] = [];
   const children: string[] = [];
 
+  let text: string | null = null;
+
   for (const [k, v] of Object.entries(obj)) {
     if (v === undefined || v === null) continue;
+    /*
+     * `value` is the element's TEXT, not an attribute.
+     *
+     * Subsonic's XML puts a genre name in the element body — <genre songCount="12"
+     * albumCount="3">rock</genre> — while its JSON carries the same thing as
+     * {"value": "rock"}. Naming the property `value` lets one response object
+     * serialise correctly into both, instead of each endpoint building two shapes.
+     */
+    if (k === 'value' && typeof v !== 'object') {
+      text = xmlEscape(String(v));
+      continue;
+    }
     if (Array.isArray(v)) {
       for (const item of v) children.push(toXml(k, item));
     } else if (typeof v === 'object') {
@@ -146,7 +175,8 @@ function toXml(name: string, node: unknown): string {
     }
   }
   const open = `<${name}${attrs.length ? ' ' + attrs.join(' ') : ''}`;
-  return children.length ? `${open}>${children.join('')}</${name}>` : `${open}/>`;
+  const body = `${text ?? ''}${children.join('')}`;
+  return body ? `${open}>${body}</${name}>` : `${open}/>`;
 }
 
 export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
@@ -159,7 +189,7 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       status: 'ok',
       version: API_VERSION,
       type: SERVER,
-      serverVersion: '0.1',
+      serverVersion: VERSION_SHORT,
       // Declares the OpenSubsonic extensions this speaks. Clients use it to decide
       // whether to bother with the newer calls.
       openSubsonic: true,
@@ -183,7 +213,7 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       status: 'failed',
       version: API_VERSION,
       type: SERVER,
-      serverVersion: '0.1',
+      serverVersion: VERSION_SHORT,
       openSubsonic: true,
       error: { code, message },
     };
@@ -453,16 +483,26 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
 
   rest('getArtists', (req, reply, user) => {
     const mine = userlib.mine(user.id, 20_000);
-    const byArtist = new Map<string, number>();
-    for (const t of mine) byArtist.set(t.artistName, (byArtist.get(t.artistName) ?? 0) + 1);
+    /*
+     * albumCount counts ALBUMS. It counted tracks, which is not a cosmetic slip: a
+     * client filtering on "artists with one album" was really selecting artists with
+     * one TRACK, which is exactly the compilation and guest-spot case — the one that
+     * getArtist could not then open. Two bugs wearing each other's clothes.
+     */
+    const byArtist = new Map<string, Set<string>>();
+    for (const t of mine) {
+      const set = byArtist.get(t.artistName) ?? new Set<string>();
+      set.add(albumKey(t.albumArtistName, t.albumTitle));
+      byArtist.set(t.artistName, set);
+    }
 
     // Subsonic groups artists under alphabetical indexes.
     const groups = new Map<string, { id: string; name: string; albumCount: number }[]>();
-    for (const [name, n] of byArtist) {
+    for (const [name, albums] of byArtist) {
       const letter = (name[0] ?? '#').toUpperCase();
       const key = /[A-Z]/.test(letter) ? letter : '#';
       const list = groups.get(key) ?? [];
-      list.push({ id: `ar-${enc(name)}`, name, albumCount: n });
+      list.push({ id: `ar-${enc(name)}`, name, albumCount: albums.size });
       groups.set(key, list);
     }
     send(req, reply, {
@@ -503,14 +543,40 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     const id = String((req.query as Record<string, string>).id ?? '');
     if (!id.startsWith('ar-')) return fail(req, reply, ERR.NOT_FOUND, 'Artist not found');
     const artist = dec(id.slice(3));
-    const albums = albumsFor(user).filter((a) => a.artist === artist);
-    if (!albums.length) return fail(req, reply, ERR.NOT_FOUND, 'Artist not found');
+    /*
+     * Match the album artist OR the track credit.
+     *
+     * getArtists builds its index from artistName; albumsFor groups on
+     * albumArtistName. Wherever those differ — a compilation, a guest spot — the
+     * artist appeared in the index and then 404ed when opened, because the album they
+     * appear on is filed under somebody else entirely.
+     */
+    const wanted = norm(artist);
+    const albums = albumsFor(user).filter((a) => norm(a.artist) === wanted);
+    const guested = albums.length
+      ? []
+      : [
+          ...new Map(
+            userlib
+              .mine(user.id, 20_000)
+              .filter((t) => norm(t.artistName) === wanted)
+              .map((t) => [albumKey(t.albumArtistName, t.albumTitle), t] as const),
+          ).values(),
+        ].map((t) => ({
+          id: albumId(t.albumArtistName, t.albumTitle),
+          name: t.albumTitle,
+          artist: t.albumArtistName,
+          songCount: 0,
+          duration: 0,
+        }));
+    const found = albums.length ? albums : guested;
+    if (!found.length) return fail(req, reply, ERR.NOT_FOUND, 'Artist not found');
     send(req, reply, {
       artist: {
         id,
         name: artist,
-        albumCount: albums.length,
-        album: albums.map((a) => ({ ...a, artistId: id, coverArt: a.id })),
+        albumCount: found.length,
+        album: found.map((a) => ({ ...a, artistId: id, coverArt: a.id })),
       },
     });
   });
@@ -520,16 +586,28 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     const parts = albumParts(id);
     if (!parts) return fail(req, reply, ERR.NOT_FOUND, 'Album not found');
     const [artist, album] = parts;
+    /*
+     * The id carries NORMALISED values, because albumKey normalises both halves so one
+     * record cannot arrive under two ids. This filter compared them against the stored
+     * originals, so an id crate had just handed out of getArtist came straight back as
+     * "Album not found" — every album, every time, on the canonical album-to-tracks
+     * path, leaving a client no option but to download the library and filter locally.
+     *
+     * It also matched artistName while the id is built from albumArtistName, which
+     * would have broken compilations even with the case fixed.
+     */
     const mine = userlib
       .mine(user.id, 20_000)
-      .filter((t) => t.artistName === artist && t.albumTitle === album);
+      .filter((t) => norm(t.albumArtistName) === artist && albumIdentity(t.albumTitle) === album);
     if (!mine.length) return fail(req, reply, ERR.NOT_FOUND, 'Album not found');
+    // Display values come from the rows: "ill communication" is an identity, not a title.
+    const first = mine[0]!;
     send(req, reply, {
       album: {
         id,
-        name: album,
-        artist,
-        artistId: `ar-${enc(artist)}`,
+        name: first.albumTitle,
+        artist: first.albumArtistName,
+        artistId: `ar-${enc(first.albumArtistName)}`,
         coverArt: id,
         songCount: mine.length,
         duration: mine.reduce((n, t) => n + (t.durationS ?? 0), 0),
@@ -565,23 +643,83 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     const mine = userlib.mine(user.id, 20_000);
     const match = (s: string) => !term || s.toLowerCase().includes(term);
 
-    const songs = mine.filter((t) => match(t.title));
-    const albums = albumsFor(user).filter((a) => match(a.name));
+    /*
+     * Songs match on more than the title.
+     *
+     * Searching an artist's name returned that artist and none of their songs, because
+     * only t.title was consulted. Every other Subsonic server matches the artist and
+     * album too, and clients are built expecting it — a search box that finds the
+     * artist but not one track of theirs reads as an empty library.
+     */
+    const songs = mine.filter(
+      (t) => match(t.title) || match(t.artistName) || match(t.albumArtistName) || match(t.albumTitle),
+    );
+    const albums = albumsFor(user).filter((a) => match(a.name) || match(a.artist));
     const artists = [...new Set(mine.map((t) => t.artistName))].filter(match);
 
     send(req, reply, {
       searchResult3: {
-        artist: artists.slice(0, Number(q.artistCount ?? 20)).map((name) => ({
+        artist: page(artists, q.artistOffset, q.artistCount, 20).map((name) => ({
           id: `ar-${enc(name)}`,
           name,
         })),
-        album: albums.slice(0, Number(q.albumCount ?? 20)).map((a) => ({
+        album: page(albums, q.albumOffset, q.albumCount, 20).map((a) => ({
           ...a,
           artistId: `ar-${enc(a.artist)}`,
           coverArt: a.id,
         })),
-        song: songs.slice(0, Number(q.songCount ?? 50)).map(songTag),
+        song: page(songs, q.songOffset, q.songCount, 50).map(songTag),
       },
+    });
+  });
+
+  /*
+   * ---- browsing by genre, and by chance --------------------------------------
+   *
+   * Three endpoints a client cannot work around. Without getRandomSongs, "play
+   * something" costs a full-library download before the client can pick one track;
+   * without the genre pair, "play some jazz" cannot be attempted at all. All three are
+   * answered from SQL rather than by reading the library into memory and filtering it
+   * there — see genreCounts, byGenre and randomTracks in lib/userlib.ts.
+   */
+
+  rest('getRandomSongs', (req, reply, user) => {
+    const q = req.query as Record<string, string>;
+    // Subsonic documents a default of 10. The cap stops a malformed size turning one
+    // request into a whole-library read.
+    const size = Math.min(Math.max(Number(q.size ?? 10) || 10, 1), 500);
+    const fromYear = Number(q.fromYear);
+    const toYear = Number(q.toYear);
+    const songs = userlib.randomTracks(user.id, size, {
+      genre: q.genre,
+      fromYear: Number.isFinite(fromYear) ? fromYear : undefined,
+      toYear: Number.isFinite(toYear) ? toYear : undefined,
+    });
+    send(req, reply, { randomSongs: { song: songs.map(songTag) } });
+  });
+
+  rest('getGenres', (req, reply, user) => {
+    send(req, reply, {
+      genres: {
+        genre: userlib.genreCounts(user.id).map((g) => ({
+          // `value` becomes element text in XML and {"value": ...} in JSON, which is
+          // what each serialisation expects. See toXml.
+          value: g.genre,
+          songCount: g.songCount,
+          albumCount: g.albumCount,
+        })),
+      },
+    });
+  });
+
+  rest('getSongsByGenre', (req, reply, user) => {
+    const q = req.query as Record<string, string>;
+    const genre = String(q.genre ?? '').trim();
+    if (!genre) return fail(req, reply, ERR.MISSING_PARAM, 'Required parameter genre is missing');
+    const count = Math.min(Math.max(Number(q.count ?? 10) || 10, 1), 500);
+    const offset = Math.max(Number(q.offset ?? 0) || 0, 0);
+    send(req, reply, {
+      songsByGenre: { song: userlib.byGenre(user.id, genre, count, offset).map(songTag) },
     });
   });
 

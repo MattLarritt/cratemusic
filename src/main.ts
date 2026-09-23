@@ -43,6 +43,7 @@ import { apiRoutes } from './routes/api.js';
 import { artRoutes } from './routes/art.js';
 import { authRoutes, makeIsAuthed, TRUSTED_PROXIES } from './routes/auth.js';
 import { scrubUrl } from './lib/logscrub.js';
+import { USER_AGENT } from './lib/version.js';
 
 /**
  * An optional env var, treating empty as absent.
@@ -82,8 +83,7 @@ const MIN_SEEDS = Number(process.env.CRATE_MIN_SEEDS ?? 1);
 
 // MusicBrainz requires a descriptive User-Agent and blocks generic ones, so
 // this is not cosmetic. A contact URL is what their policy asks for.
-const MB_UA =
-  process.env.CRATE_MB_USER_AGENT ?? 'crate/0.1 ( https://github.com/MattLarritt/cratemusic )';
+const MB_UA = process.env.CRATE_MB_USER_AGENT ?? USER_AGENT;
 
 // The pipeline: crate searches Prowlarr, hands the NZB to SABnzbd, and imports
 // the result itself. There is no other download path.

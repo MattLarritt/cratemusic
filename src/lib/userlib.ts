@@ -27,6 +27,7 @@ import type Database from 'better-sqlite3';
 import { albumIdentity, canonAlbum } from './library.js';
 import { norm } from './release.js';
 import { materialize, parseRules } from './dynamicpl.js';
+import { isJunk } from './genrefam.js';
 
 export interface PoolTrack {
   /**
@@ -1400,6 +1401,166 @@ export class UserLibrary {
       .all(trackId) as { username: string }[];
     return rows.map((r) => r.username);
   }
+
+  /*
+   * ---- genres and random selection ----------------------------------------
+   *
+   * Two sources of genre, because neither covers a library on its own:
+   *
+   *   tracks.genres   the file's own tags, lowercased and comma-joined. The better
+   *                   answer wherever it exists, being per track rather than per
+   *                   artist — a jazz standard on a rock artist's album is tagged
+   *                   correctly here and nowhere else.
+   *   artist_genres   materialised from MusicBrainz, keyed on norm_artist. Used ONLY
+   *                   where a track carries no tag of its own, which takes poorly
+   *                   tagged files off zero instead of leaving them unreachable.
+   *
+   * Both queries run in SQL rather than reading the library into memory and grouping
+   * it there. "Play something" and "play some jazz" are the two things most often
+   * asked of a music client, and neither should cost a full-library read.
+   */
+
+  /**
+   * Every genre in this user's library, with how much of it each covers.
+   *
+   * The split happens in JS because a stored genre string holds several comma-separated
+   * values: a recursive CTE to split them in SQL would be slower and far harder to read
+   * for a list this size.
+   */
+  genreCounts(userId: number): { genre: string; songCount: number; albumCount: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT t.genres AS genres,
+                COALESCE(ag.genres, '') AS artistGenres,
+                t.norm_artist || '|' || t.norm_album AS albumKey
+           FROM user_tracks ut
+           JOIN tracks t ON t.id = ut.track_id
+           LEFT JOIN (SELECT norm_artist, GROUP_CONCAT(genre, ', ') AS genres
+                        FROM artist_genres GROUP BY norm_artist) ag
+                  ON ag.norm_artist = t.norm_artist
+          WHERE ut.user_id = ?`,
+      )
+      .all(userId) as { genres: string; artistGenres: string; albumKey: string }[];
+
+    const songs = new Map<string, number>();
+    const albums = new Map<string, Set<string>>();
+    for (const r of rows) {
+      // The track's own tags win outright. The artist's genres only stand in for a
+      // track that has none, so a well-tagged file is never diluted by them.
+      const source = r.genres.trim() ? r.genres : r.artistGenres;
+      for (const g of splitGenres(source)) {
+        songs.set(g, (songs.get(g) ?? 0) + 1);
+        const set = albums.get(g) ?? new Set<string>();
+        set.add(r.albumKey);
+        albums.set(g, set);
+      }
+    }
+    return [...songs.entries()]
+      .map(([genre, songCount]) => ({
+        genre,
+        songCount,
+        albumCount: albums.get(genre)?.size ?? 0,
+      }))
+      .sort((a, b) => b.songCount - a.songCount || a.genre.localeCompare(b.genre));
+  }
+
+  /** Tracks in one genre, matched case-insensitively against whichever source applies. */
+  byGenre(userId: number, genre: string, count: number, offset: number): PoolTrack[] {
+    const needle = genre.trim().toLowerCase();
+    if (!needle) return [];
+    // Match whole values, not substrings. Wrapping both the stored string and the
+    // needle in ', ' makes every value internally delimited, so 'rock' cannot match
+    // 'punk rock' and 'pop' cannot sweep in a track tagged only 'synthpop'.
+    const pattern = `%, ${needle}, %`;
+    const rows = this.db
+      .prepare(
+        `SELECT t.id, t.path, t.artist_name, t.album_title, t.title, t.track_no,
+                t.duration_s, t.size, t.album_artist_name, t.year
+           FROM user_tracks ut
+           JOIN tracks t ON t.id = ut.track_id
+           LEFT JOIN (SELECT norm_artist, GROUP_CONCAT(genre, ', ') AS genres
+                        FROM artist_genres GROUP BY norm_artist) ag
+                  ON ag.norm_artist = t.norm_artist
+          WHERE ut.user_id = ?
+            AND (
+              (TRIM(t.genres) <> '' AND ', ' || LOWER(t.genres) || ', ' LIKE ?)
+              OR (TRIM(t.genres) = '' AND ', ' || LOWER(COALESCE(ag.genres, '')) || ', ' LIKE ?)
+            )
+          ORDER BY t.norm_artist, t.norm_album, t.track_no
+          LIMIT ? OFFSET ?`,
+      )
+      .all(userId, pattern, pattern, count, offset) as RawTrack[];
+    return rows.map(toPool);
+  }
+
+  /**
+   * Random tracks from this user's library.
+   *
+   * ORDER BY RANDOM() over the indexed join rather than shuffling everything the user
+   * owns in memory: this exists so "play something" costs one query instead of sending
+   * a whole library across the wire for the client to pick from.
+   */
+  randomTracks(
+    userId: number,
+    size: number,
+    opts: { genre?: string; fromYear?: number; toYear?: number } = {},
+  ): PoolTrack[] {
+    const where: string[] = ['ut.user_id = ?'];
+    const args: unknown[] = [userId];
+
+    if (opts.genre?.trim()) {
+      const pattern = `%, ${opts.genre.trim().toLowerCase()}, %`;
+      where.push(
+        `((TRIM(t.genres) <> '' AND ', ' || LOWER(t.genres) || ', ' LIKE ?)
+          OR (TRIM(t.genres) = '' AND ', ' || LOWER(COALESCE(ag.genres, '')) || ', ' LIKE ?))`,
+      );
+      args.push(pattern, pattern);
+    }
+    // Year 0 is the scanner's "looked, found nothing" marker rather than a real year,
+    // so a year filter has to exclude it instead of treating it as antiquity.
+    if (Number.isFinite(opts.fromYear)) {
+      where.push('t.year > 0 AND t.year >= ?');
+      args.push(opts.fromYear);
+    }
+    if (Number.isFinite(opts.toYear)) {
+      where.push('t.year > 0 AND t.year <= ?');
+      args.push(opts.toYear);
+    }
+    args.push(size);
+
+    const rows = this.db
+      .prepare(
+        `SELECT t.id, t.path, t.artist_name, t.album_title, t.title, t.track_no,
+                t.duration_s, t.size, t.album_artist_name, t.year
+           FROM user_tracks ut
+           JOIN tracks t ON t.id = ut.track_id
+           LEFT JOIN (SELECT norm_artist, GROUP_CONCAT(genre, ', ') AS genres
+                        FROM artist_genres GROUP BY norm_artist) ag
+                  ON ag.norm_artist = t.norm_artist
+          WHERE ${where.join(' AND ')}
+          ORDER BY RANDOM()
+          LIMIT ?`,
+      )
+      .all(...args) as RawTrack[];
+    return rows.map(toPool);
+  }
+}
+
+/**
+ * Split a stored genre string into clean, de-duplicated values.
+ *
+ * Both sources are comma-joined, and junk tags ("seen live", "favourites") are dropped
+ * using the same predicate the taste engine uses. A genre list is only useful to a
+ * client if every entry is something a person would actually ask to hear.
+ */
+export function splitGenres(raw: string): string[] {
+  const out = new Set<string>();
+  for (const part of String(raw ?? '').split(',')) {
+    const g = part.trim().toLowerCase();
+    if (!g || isJunk(g)) continue;
+    out.add(g);
+  }
+  return [...out];
 }
 
 interface RawTrack {
