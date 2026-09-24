@@ -20,6 +20,7 @@ import type { Algo } from '../lib/algo.js';
 import type { OpenAi } from '../lib/openai.js';
 import type { SongCharacteristics } from '../lib/songcharacteristics.js';
 import { parseRules } from '../lib/dynamicpl.js';
+import { narrow, line } from '../lib/curate.js';
 import { MAX_ART_BYTES, type PlaylistArt } from '../lib/playlistart.js';
 
 const MIME: Record<string, string> = {
@@ -442,16 +443,34 @@ export function playRoutes(app: FastifyInstance, deps: PlayDeps): void {
     const catalog = userlib.aiCatalog(c.id);
     if (!catalog.length) return reply.code(400).send({ error: 'your library is empty' });
 
-    const lines = catalog.map(
-      (t) =>
-        `${t.id}\t${t.artist} — ${t.title} (${t.album}${t.year ? `, ${t.year}` : ''})${t.genres ? ` [${t.genres}]` : ''}`,
-    );
-    const built = await openai.buildPlaylist(prompt, lines);
+    // Two passes, because one does not fit. Sending the whole library ran to tens of
+    // thousands of tokens against a much smaller per-minute ceiling, so every build
+    // failed with 429 "Request too large" — a request that could never have succeeded,
+    // not a flaky one. Stage one reads a summary and names the slice worth reading;
+    // narrow() turns that into a pool inside the budget. A failed plan is not fatal:
+    // narrow(null) falls back to a broad sample.
+    const plan = await openai.planSelection(prompt, userlib.aiSummary(c.id));
+    const pool = narrow(catalog, plan);
+    if (pool.sampled || pool.widened) {
+      req.log.info(
+        `ai playlist: ${catalog.length} tracks -> ${pool.matched} matched -> ${pool.tracks.length} sent` +
+          `${pool.widened ? ' (plan too narrow, widened)' : ''}${pool.sampled ? ' (budget sampled)' : ''}`,
+      );
+    }
+
+    let built;
+    try {
+      built = await openai.buildPlaylist(prompt, pool.tracks.map(line));
+    } catch (e) {
+      // The reason is already translated into something actionable; pass it through
+      // rather than replacing it with advice that may not apply.
+      return reply.code(502).send({ error: (e as Error).message });
+    }
     if (!built) {
       return reply.code(502).send({ error: 'the model returned nothing usable — try rewording' });
     }
 
-    const owned = new Set(catalog.map((t) => t.id));
+    const owned = new Set(pool.tracks.map((t) => t.id));
     const picks = [...new Set(built.trackIds)].filter((id) => owned.has(id)).slice(0, 100);
     if (!picks.length) {
       return reply.code(502).send({ error: 'the model picked nothing from your library — try rewording' });

@@ -937,6 +937,44 @@ export class UserLibrary {
       .all(userId) as { id: number; artist: string; title: string; album: string; year: number | null; genres: string }[];
   }
 
+  /**
+   * The library in miniature: which genres it uses, who is in it, which decades it spans.
+   *
+   * This is what stage one of an AI playlist build reads instead of the library itself.
+   * It stays a couple of thousand tokens whether the library holds three thousand tracks
+   * or thirty thousand, which is the whole point — see lib/curate.ts.
+   *
+   * Artists are ordered by how much of the library they account for and capped, so a long
+   * tail of one-track guest credits cannot crowd out the artists somebody actually has.
+   */
+  aiSummary(userId: number): { genres: string[]; artists: string[]; decades: number[] } {
+    const artists = this.db
+      .prepare(
+        `SELECT t.artist_name AS artist, COUNT(*) AS n
+           FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
+          WHERE ut.user_id = ? AND TRIM(COALESCE(t.artist_name,'')) <> ''
+          GROUP BY t.norm_artist
+          ORDER BY n DESC, t.norm_artist
+          LIMIT 600`,
+      )
+      .all(userId) as { artist: string; n: number }[];
+
+    const decades = this.db
+      .prepare(
+        `SELECT DISTINCT (t.year / 10) * 10 AS decade
+           FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
+          WHERE ut.user_id = ? AND t.year > 0
+          ORDER BY decade`,
+      )
+      .all(userId) as { decade: number }[];
+
+    return {
+      genres: this.genreCounts(userId).map((g) => g.genre),
+      artists: artists.map((a) => a.artist),
+      decades: decades.map((d) => d.decade),
+    };
+  }
+
   createPlaylist(userId: number, name: string, rules: string | null = null): number {
     const info = this.db
       .prepare(

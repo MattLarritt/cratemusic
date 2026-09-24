@@ -31,7 +31,7 @@
  */
 
 import { mkdir } from 'node:fs/promises';
-import type { Settings } from './settings.js';
+import type { ConfigSource } from './settings.js';
 
 export interface TorrentJob {
   hash: string;
@@ -94,7 +94,7 @@ export class Qbit {
   /** The WebUI session cookie, when one was needed. */
   private sid: string | null = null;
 
-  constructor(private settings: Settings) {}
+  constructor(private settings: ConfigSource) {}
 
   get configured(): boolean {
     return Boolean(this.settings.all().qbitUrl);
@@ -166,11 +166,71 @@ export class Qbit {
     this.sid = sid;
   }
 
+  /** The categories this client knows, by name. */
+  async categories(): Promise<string[]> {
+    const res = await this.call('/torrents/categories');
+    if (!res.ok) throw new Error(`qBittorrent responded ${res.status} listing categories`);
+    const text = await res.text();
+    try {
+      return Object.keys(JSON.parse(text) as Record<string, unknown>);
+    } catch {
+      // Same reasoning as version(): say what is wrong, not how the parse failed.
+      throw new Error(`${this.base} did not return a category list — check the address and port`);
+    }
+  }
+
+  /**
+   * Make sure crate's category exists before anything is filed under it.
+   *
+   * crate does not merely tag its torrents with this category, it FINDS them by it:
+   * add() watches the category for a newcomer, and status polling reads it back. So a
+   * category that does not exist is not a cosmetic problem — the torrent downloads
+   * perfectly and crate never sees it again, then eventually gives up with "accepted
+   * but it never appeared in the queue".
+   *
+   * Creating it here is the same bargain as the save-path mkdir a few lines into add():
+   * crate prepares what it is about to depend on, rather than requiring the operator to
+   * have set it up by hand and failing obscurely when they have not.
+   *
+   * createCategory answers 409 when the name is already taken, which counts as success.
+   * Checking first and creating second would still race with anything else using the
+   * same client.
+   */
+  async ensureCategory(): Promise<'existed' | 'created'> {
+    const cfg = this.settings.all();
+    if (!cfg.qbitCategory) return 'existed';
+    if ((await this.categories()).includes(cfg.qbitCategory)) return 'existed';
+
+    const res = await this.call(
+      '/torrents/createCategory',
+      new URLSearchParams({ category: cfg.qbitCategory, savePath: cfg.qbitSavePath }),
+    );
+    if (res.ok) return 'created';
+    if (res.status === 409) return 'existed';
+    throw new Error(
+      `qBittorrent would not create the category "${cfg.qbitCategory}": ` +
+        `${(await res.text()).trim() || res.status}`,
+    );
+  }
+
   /** Version string, for the admin page's connection test. */
   async version(): Promise<string> {
     const res = await this.call('/app/version');
     if (!res.ok) throw new Error(`qBittorrent responded ${res.status}`);
-    return (await res.text()).trim();
+    const text = (await res.text()).trim();
+    /*
+     * Something answering is not the same as qBittorrent answering.
+     *
+     * The commonest setup mistake is a URL pointing at the wrong port — at another
+     * service on the same machine, which cheerfully returns 200 and a page of HTML.
+     * Without this check that page became the "version", and the real complaint only
+     * surfaced later as a JSON parse error, which tells the operator nothing about
+     * what is actually wrong.
+     */
+    if (!text || text.length > 40 || text.includes('<')) {
+      throw new Error(`${this.base} answered, but not like qBittorrent — check the address and port`);
+    }
+    return text;
   }
 
   /**
@@ -189,6 +249,8 @@ export class Qbit {
    */
   async add(url: string, name: string): Promise<string> {
     const cfg = this.settings.all();
+    // Before listByCategory(), which is meaningless if the category does not exist.
+    await this.ensureCategory();
     const before = new Set((await this.listByCategory()).map((t) => t.hash));
 
     // Both clients see this path, so crate can prepare the directory

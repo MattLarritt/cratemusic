@@ -6362,12 +6362,19 @@ function SecretField({
   );
 }
 
+/**
+ * `draft` is read at click time, not at render time, so the test always sees the field
+ * the operator just typed into. Passing the values themselves would capture whatever
+ * they were when this row last rendered — the subtler version of the bug being fixed.
+ */
 function TestButton({
   what,
   say,
+  draft,
 }: {
   what: 'sab' | 'prowlarr' | 'lastfm' | 'qbit' | 'mbmirror' | 'acoustid' | 'openai';
   say: (k: 'good' | 'bad', t: string) => void;
+  draft?: () => Record<string, unknown>;
 }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; detail: string } | null>(null);
@@ -6376,7 +6383,7 @@ function TestButton({
     setBusy(true);
     setResult(null);
     try {
-      const r = await api.testConnection(what);
+      const r = await api.testConnection(what, draft?.());
       setResult(r);
       say(r.ok ? 'good' : 'bad', r.detail);
     } catch (e) {
@@ -6427,37 +6434,45 @@ function DownloadingPane({ say }: { say: (k: 'good' | 'bad', t: string) => void 
   }, []);
   useEffect(load, [load]);
 
+  /**
+   * The settings as the form currently holds them.
+   *
+   * Lifted out of save() so the Test buttons can send exactly what save() would write.
+   */
+  const payload = (cur: AdminSettings) => ({
+    sabUrl: cur.sabUrl,
+    sabKey: cur.sabKey,
+    sabCategory: cur.sabCategory,
+    prowlarrUrl: cur.prowlarrUrl,
+    prowlarrKey: cur.prowlarrKey,
+    formats: cur.formats,
+    requireLossless: cur.requireLossless,
+    losslessMinMbPerTrack: cur.losslessMinMbPerTrack,
+    losslessMaxMbPerTrack: cur.losslessMaxMbPerTrack,
+    lossyMinMbPerTrack: cur.lossyMinMbPerTrack,
+    lossyMaxMbPerTrack: cur.lossyMaxMbPerTrack,
+    maxTotalMb: cur.maxTotalMb,
+    artRetentionDays: cur.artRetentionDays,
+    disqualify: cur.disqualify,
+    maxAttempts: cur.maxAttempts,
+    stallMinutes: cur.stallMinutes,
+    dailyAlbumCap: cur.dailyAlbumCap,
+    maxAlbumsPerRequest: cur.maxAlbumsPerRequest,
+    qbitUrl: cur.qbitUrl,
+    qbitUser: cur.qbitUser,
+    qbitPassword: cur.qbitPassword,
+    qbitCategory: cur.qbitCategory,
+    qbitSavePath: cur.qbitSavePath,
+    preferProtocol: cur.preferProtocol,
+    minSeeders: cur.minSeeders,
+    
+  });
+
   const save = async () => {
     if (!s) return;
     setSaving(true);
     try {
-      const r = await api.saveSettings({
-        sabUrl: s.sabUrl,
-        sabKey: s.sabKey,
-        sabCategory: s.sabCategory,
-        prowlarrUrl: s.prowlarrUrl,
-        prowlarrKey: s.prowlarrKey,
-        formats: s.formats,
-        requireLossless: s.requireLossless,
-        losslessMinMbPerTrack: s.losslessMinMbPerTrack,
-        losslessMaxMbPerTrack: s.losslessMaxMbPerTrack,
-        lossyMinMbPerTrack: s.lossyMinMbPerTrack,
-        lossyMaxMbPerTrack: s.lossyMaxMbPerTrack,
-        maxTotalMb: s.maxTotalMb,
-        artRetentionDays: s.artRetentionDays,
-        disqualify: s.disqualify,
-        maxAttempts: s.maxAttempts,
-        stallMinutes: s.stallMinutes,
-        dailyAlbumCap: s.dailyAlbumCap,
-        maxAlbumsPerRequest: s.maxAlbumsPerRequest,
-        qbitUrl: s.qbitUrl,
-        qbitUser: s.qbitUser,
-        qbitPassword: s.qbitPassword,
-        qbitCategory: s.qbitCategory,
-        qbitSavePath: s.qbitSavePath,
-        preferProtocol: s.preferProtocol,
-        minSeeders: s.minSeeders,
-      });
+      const r = await api.saveSettings(payload(s));
       setS(r.settings);
       say('good', 'Saved. Changes apply to the next request — no restart needed.');
       load();
@@ -6509,7 +6524,7 @@ function DownloadingPane({ say }: { say: (k: 'good' | 'bad', t: string) => void 
         </span>
         <input value={s.sabCategory} onChange={(e) => set('sabCategory', e.target.value)} />
       </label>
-      <TestButton what="sab" say={say} />
+      <TestButton what="sab" say={say} draft={() => payload(s)} />
 
       <h3>Indexer — Prowlarr</h3>
       <label className="field">
@@ -6523,7 +6538,7 @@ function DownloadingPane({ say }: { say: (k: 'good' | 'bad', t: string) => void 
         value={s.prowlarrKey}
         onChange={(v) => set('prowlarrKey', v)}
       />
-      <TestButton what="prowlarr" say={say} />
+      <TestButton what="prowlarr" say={say} draft={() => payload(s)} />
 
       <h3>Search criteria</h3>
       <label className="field">
@@ -6719,7 +6734,7 @@ function DownloadingPane({ say }: { say: (k: 'good' | 'bad', t: string) => void 
           />
         </label>
       </div>
-      <TestButton what="qbit" say={say} />
+      <TestButton what="qbit" say={say} draft={() => payload(s)} />
       <div className="field">
         <span>Prefer</span>
         <div className="chips" style={{ marginTop: 6 }}>
@@ -6878,19 +6893,23 @@ function LastfmPane({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   }, []);
   useEffect(load, [load]);
 
+  /** As in DownloadingPane: what the form holds, so a key can be tested before saving. */
+  const payload = (cur: AdminSettings) => ({
+    lastfmKey: cur.lastfmKey,
+    minSeeds: cur.minSeeds,
+    mbMirrorUrl: cur.mbMirrorUrl,
+    acoustidKey: cur.acoustidKey,
+    openaiKey: cur.openaiKey,
+    warmPages: cur.warmPages,
+    songCharacteristics: cur.songCharacteristics,
+    
+  });
+
   const save = async () => {
     if (!s) return;
     setSaving(true);
     try {
-      const r = await api.saveSettings({
-        lastfmKey: s.lastfmKey,
-        minSeeds: s.minSeeds,
-        mbMirrorUrl: s.mbMirrorUrl,
-        acoustidKey: s.acoustidKey,
-        openaiKey: s.openaiKey,
-        warmPages: s.warmPages,
-        songCharacteristics: s.songCharacteristics,
-      });
+      const r = await api.saveSettings(payload(s));
       setS(r.settings);
       say('good', 'Saved.');
     } catch (e) {
@@ -6925,7 +6944,7 @@ function LastfmPane({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
         value={s.lastfmKey}
         onChange={(v) => setS({ ...s, lastfmKey: v })}
       />
-      <TestButton what="lastfm" say={say} />
+      <TestButton what="lastfm" say={say} draft={() => payload(s)} />
 
       <label className="field">
         <span>
@@ -6976,7 +6995,7 @@ function LastfmPane({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
         database, so a mirror without one still serves everything looked up by id — crate sends
         only the searches to the public API in that case.
       </div>
-      <TestButton what="mbmirror" say={say} />
+      <TestButton what="mbmirror" say={say} draft={() => payload(s)} />
 
       <div className="rowhead">
         <h2>AcoustID</h2>
@@ -6994,7 +7013,7 @@ function LastfmPane({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
         value={s.acoustidKey}
         onChange={(v) => setS({ ...s, acoustidKey: v })}
       />
-      <TestButton what="acoustid" say={say} />
+      <TestButton what="acoustid" say={say} draft={() => payload(s)} />
 
       <div className="rowhead">
         <h2>OpenAI</h2>
@@ -7013,7 +7032,7 @@ function LastfmPane({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
         value={s.openaiKey}
         onChange={(v) => setS({ ...s, openaiKey: v })}
       />
-      <TestButton what="openai" say={say} />
+      <TestButton what="openai" say={say} draft={() => payload(s)} />
 
       <div className="rowhead">
         <h2>Song characteristics</h2>
@@ -10103,6 +10122,20 @@ function NewPlaylistModal({ say, onClose }: { say: (k: 'good' | 'bad', t: string
             </p>
             <RecipeFields recipe={recipe} />
           </>
+        )}
+
+        {ai && (
+          <label>
+            <span className="lbl">Describe the playlist you want</span>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              maxLength={500}
+              rows={5}
+              autoFocus
+              placeholder={'Mood, era, energy, how many songs, a name if you have one…\ne.g. "soft acoustic for a rainy Sunday, 15 songs, no repeat artists, call it Drizzle"'}
+            />
+          </label>
         )}
 
         <div className="bar">

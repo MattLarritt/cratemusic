@@ -1,5 +1,6 @@
 import { postJson } from './http.js';
-import type { Settings } from './settings.js';
+import type { ConfigSource } from './settings.js';
+import type { SelectionPlan } from './curate.js';
 import type { AnalysisInput, AnalysisResult, CharacteristicDef } from './characteristics.js';
 import type { Assignment, MatchFile, MatchTrack } from './trackmatch.js';
 
@@ -39,13 +40,36 @@ const CURATOR_MODEL = 'gpt-4.1';
  */
 const CHARACTERISTIC_MODEL = 'gpt-4.1-mini';
 
+/**
+ * Turn a transport failure into advice.
+ *
+ * This exists because of a real misdiagnosis: a 429 "Request too large" surfaced to the
+ * user as "the model returned nothing usable — try rewording", so the one thing that
+ * could not possibly help was the only thing suggested. Rewording a prompt does not
+ * shrink a library. The rule is that the message names what went wrong and who can fix it.
+ */
+export function failureReason(err: unknown): string {
+  const m = err instanceof Error ? err.message : String(err);
+  if (m.includes('HTTP 429')) {
+    return m.includes('Request too large')
+      ? 'the request exceeded what this OpenAI plan allows in one minute'
+      : 'OpenAI is rate-limiting this key — wait a minute and try again';
+  }
+  if (m.includes('HTTP 401') || m.includes('HTTP 403')) {
+    return 'OpenAI rejected the API key (Admin → Settings)';
+  }
+  if (/HTTP 5\d\d/.test(m)) return 'OpenAI had a server error — try again shortly';
+  if (/timed out|timeout|aborted/i.test(m)) return 'OpenAI took too long to answer';
+  return m;
+}
+
 interface ChatResponse {
   choices?: { message?: { content?: string } }[];
 }
 
 export class OpenAi {
   constructor(
-    private settings: Settings,
+    private settings: ConfigSource,
     private warn: (msg: string) => void = () => {},
   ) {}
 
@@ -134,6 +158,79 @@ export class OpenAi {
    * Null means "no usable answer" — bad JSON, timeout, empty pick list — and the route turns
    * that into an honest error instead of an empty playlist appearing by magic.
    */
+  /**
+   * Stage one of a playlist build: decide what to look for before reading anything.
+   *
+   * A library does not fit in a request and never will again — see lib/curate.ts for the
+   * arithmetic. So the model first sees only a summary (genre names, artist names, the
+   * decades present), which stays a couple of thousand tokens at any library size, and
+   * names the slice worth reading properly.
+   *
+   * Returns null rather than throwing when the plan cannot be had: the caller falls back
+   * to a broad sample, which beats failing a build over the cheap call. The smaller model
+   * because picking labels off a list is not the part that needs taste.
+   */
+  async planSelection(
+    prompt: string,
+    summary: { genres: string[]; artists: string[]; decades: number[] },
+  ): Promise<SelectionPlan | null> {
+    const key = this.settings.all().openaiKey;
+    if (!key) return null;
+
+    try {
+      const res = await postJson<ChatResponse>(
+        API,
+        {
+          model: CHARACTERISTIC_MODEL,
+          temperature: 0,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You plan a music search. You receive a listener\'s request and an inventory ' +
+                'of their library: the genre names it uses, the artists in it, and the decades ' +
+                'it covers. Name the slice of that library worth reading to answer the request. ' +
+                'Use ONLY genre and artist spellings from the inventory — an invented spelling ' +
+                'matches nothing. Be generous: this is a sieve, not the answer, and a slice that ' +
+                'is too narrow costs a good playlist. Twenty to forty genres is normal for a ' +
+                'mood request. Name artists only when the request implies particular ones. ' +
+                'Leave years null unless the request is explicitly about a period. ' +
+                'Reply with JSON only: {"genres":[...],"artists":[...],' +
+                '"fromYear":<number|null>,"toYear":<number|null>}',
+            },
+            {
+              role: 'user',
+              content:
+                `Request: ${prompt}\n\n` +
+                `Genres: ${summary.genres.join(', ')}\n\n` +
+                `Artists: ${summary.artists.join(', ')}\n\n` +
+                `Decades: ${summary.decades.join(', ')}`,
+            },
+          ],
+        },
+        { headers: { Authorization: `Bearer ${key}` }, timeoutMs: 30_000 },
+      );
+      const parsed = JSON.parse(res.choices?.[0]?.message?.content ?? '') as Record<string, unknown>;
+      const list = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+      const year = (v: unknown): number | null => {
+        const n = Number(v);
+        return Number.isInteger(n) && n > 1000 && n < 3000 ? n : null;
+      };
+      return {
+        genres: list(parsed.genres),
+        artists: list(parsed.artists),
+        fromYear: year(parsed.fromYear),
+        toYear: year(parsed.toYear),
+      };
+    } catch (err) {
+      // Deliberately soft: the caller widens instead of failing.
+      this.warn(`openai selection plan failed: ${failureReason(err)}`);
+      return null;
+    }
+  }
+
   async buildPlaylist(
     prompt: string,
     catalog: string[],
@@ -189,7 +286,9 @@ export class OpenAi {
       const trackIds = Array.isArray(parsed.trackIds)
         ? parsed.trackIds.map(Number).filter((n) => Number.isInteger(n) && n > 0)
         : [];
-      if (!trackIds.length) return null;
+      if (!trackIds.length) {
+        throw new Error('the model returned nothing usable — try rewording');
+      }
       return {
         name: String(parsed.name ?? '').trim(),
         description: String(parsed.description ?? '').trim(),
@@ -197,7 +296,7 @@ export class OpenAi {
       };
     } catch (err) {
       this.warn(`openai playlist build failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+      throw new Error(failureReason(err));
     }
   }
 

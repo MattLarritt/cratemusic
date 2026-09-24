@@ -18,16 +18,16 @@
 import { statfs } from 'node:fs/promises';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Library } from '../lib/library.js';
-import type { Prowlarr } from '../lib/prowlarr.js';
-import type { Sab } from '../lib/sab.js';
-import type { Qbit } from '../lib/qbit.js';
-import type { Config, Settings } from '../lib/settings.js';
+import { Prowlarr } from '../lib/prowlarr.js';
+import { Sab } from '../lib/sab.js';
+import { Qbit } from '../lib/qbit.js';
+import { draftConfig, type Config, type ConfigSource, type Settings } from '../lib/settings.js';
 import type { Store } from '../lib/store.js';
 import { getJson } from '../lib/http.js';
 import { parseFile } from 'music-metadata';
 import type { AcoustId } from '../lib/acoustid.js';
 import type { StagedFile, Uploads } from '../lib/upload.js';
-import type { OpenAi } from '../lib/openai.js';
+import { OpenAi } from '../lib/openai.js';
 import { mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { moveFile } from '../lib/importer.js';
@@ -299,18 +299,58 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
     if (!needAdmin(req, reply)) return;
     const what = String((req.params as { what: string }).what);
 
+    /*
+     * The body may carry the settings currently ON SCREEN, unsaved.
+     *
+     * Without that this button could only ever prove what was already in the database,
+     * so the way to check a new URL was to save it first — committing a value you were
+     * not yet sure about and, when it turned out wrong, leaving the broken one in place
+     * while you worked out why.
+     *
+     * Nothing here writes: the draft becomes a throwaway ConfigSource and the
+     * long-lived clients are left alone. See draftConfig() for the two rules that
+     * govern it, including why an empty secret means "keep the stored one".
+     */
+    const body = (req.body ?? {}) as { draft?: Record<string, unknown> };
+    const draft = body.draft && typeof body.draft === 'object' ? body.draft : null;
+    const source: ConfigSource = draft
+      ? { all: () => draftConfig(settings.all(), draft, WRITABLE) }
+      : settings;
+    // The very same objects when nothing was sent, so the saved-settings path is untouched.
+    const theSab = draft ? new Sab(source) : sab;
+    const theQbit = draft ? new Qbit(source) : qbit;
+    const theProwlarr = draft ? new Prowlarr(source) : prowlarr;
+    const theOpenai = draft ? new OpenAi(source) : deps.openai;
+
     try {
       if (what === 'sab') {
-        const status = await sab.serverStatus();
+        const status = await theSab.serverStatus();
         return { ok: true, detail: `SABnzbd ${status.version}, ${status.queued} queued` };
       }
       if (what === 'qbit') {
-        if (!qbit.configured) return { ok: false, detail: 'no qBittorrent URL configured' };
-        const version = await qbit.version();
-        return { ok: true, detail: `qBittorrent ${version}` };
+        if (!theQbit.configured) return { ok: false, detail: 'no qBittorrent URL configured' };
+        const version = await theQbit.version();
+        /*
+         * The category is part of "does this work", not a footnote. crate finds its own
+         * torrents BY it, so a missing one means downloads that succeed and are then
+         * never seen again — which is what this reported as a mysterious failure.
+         * Saying so here is what turns it into something you can spot beforehand.
+         */
+        const wanted = source.all().qbitCategory;
+        if (!wanted) {
+          return { ok: false, detail: `qBittorrent ${version}, but no category is set` };
+        }
+        const known = await theQbit.categories();
+        return {
+          ok: true,
+          detail: known.includes(wanted)
+            ? `qBittorrent ${version}, category "${wanted}" ready`
+            : `qBittorrent ${version}, category "${wanted}" does not exist yet — ` +
+              `crate will create it on the first download`,
+        };
       }
       if (what === 'prowlarr') {
-        const n = await prowlarr.indexerCount();
+        const n = await theProwlarr.indexerCount();
         return {
           ok: n > 0,
           detail:
@@ -320,7 +360,7 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
         };
       }
       if (what === 'mbmirror') {
-        const { mbMirrorUrl } = settings.all();
+        const { mbMirrorUrl } = source.all();
         if (!mbMirrorUrl) return { ok: false, detail: 'no mirror URL set; using the public API' };
         const base = mirrorBase(mbMirrorUrl);
         // A known mbid rather than a search: it proves the database imported,
@@ -365,10 +405,10 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
         return { ok: true, detail: `answered in ${ms}ms — ${body.name}; ${search}` };
       }
       if (what === 'openai') {
-        return deps.openai.testKey();
+        return theOpenai.testKey();
       }
       if (what === 'acoustid') {
-        const { acoustidKey } = settings.all();
+        const { acoustidKey } = source.all();
         if (!acoustidKey) return { ok: false, detail: 'no key set' };
         /*
          * Probed with a junk fingerprint on purpose: a BAD KEY fails before
@@ -398,7 +438,7 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
         }
       }
       if (what === 'lastfm') {
-        const { lastfmKey } = settings.all();
+        const { lastfmKey } = source.all();
         if (!lastfmKey) return { ok: false, detail: 'no API key set' };
         const url =
           'https://ws.audioscrobbler.com/2.0/?method=artist.getsimilar' +
@@ -410,7 +450,17 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
       }
       return reply.code(400).send({ error: 'unknown test' });
     } catch (err) {
-      return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+      const message = err instanceof Error ? err.message : String(err);
+      /*
+       * "fetch failed" is what Node says when nothing answered, and it tells an
+       * operator nothing they can act on. The whole point of this button is to
+       * diagnose a setting, so the one message it produces most often should name the
+       * things worth checking.
+       */
+      const detail = /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(message)
+        ? 'could not reach it — check the address and port, and that the service is running'
+        : message;
+      return { ok: false, detail };
     }
   });
 
