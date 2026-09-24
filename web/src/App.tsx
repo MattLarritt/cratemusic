@@ -10124,6 +10124,20 @@ function NewPlaylistModal({ say, onClose }: { say: (k: 'good' | 'bad', t: string
           </>
         )}
 
+        {ai && (
+          <label>
+            <span className="lbl">Describe the playlist you want</span>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              maxLength={500}
+              rows={5}
+              autoFocus
+              placeholder={'Mood, era, energy, how many songs, a name if you have one…\ne.g. "soft acoustic for a rainy Sunday, 15 songs, no repeat artists, call it Drizzle"'}
+            />
+          </label>
+        )}
+
         <div className="bar">
           <button className="btn sm" disabled={busy || !ready} onClick={() => void go()}>
             {busy ? (ai ? 'Reading your library…' : 'Creating…') : ai ? 'Build playlist' : 'Create playlist'}
