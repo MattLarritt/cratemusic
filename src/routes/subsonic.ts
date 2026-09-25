@@ -454,9 +454,9 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
   /**
    * A song that is not in the library yet, shaped so a client cannot tell the difference.
    *
-   * m4a / audio/mp4 regardless of what the source serves, because that is what the stream
-   * endpoint delivers for these (see the YouTube plugin: AAC chosen precisely so iOS's
-   * AVPlayer can play it). No albumId or artistId: there is no album or artist page for a song
+   * m4a / audio/mp4, the format a source is expected to serve: AAC plays everywhere,
+   * including iOS's AVPlayer, which almost every iPhone client plays through and which
+   * cannot decode Opus or WebM at all. No albumId or artistId: there is no album or artist page for a song
    * crate does not hold, and inventing one would give a client a link to a 404.
    */
   function externalSongTag(row: ExternalRow): Record<string, unknown> {
@@ -667,7 +667,15 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     });
   });
 
-  rest('search3', async (req, reply, user) => {
+  /*
+   * search2 and search3 are one search with two answer shapes.
+   *
+   * search2 is the older, folder-flavoured call — albums come back as directories — and some
+   * clients still use it for everything: Nautiline searches with search2 alone. It was simply not
+   * implemented, so every Nautiline search failed, which also meant it could never reach the
+   * external-source fallback below.
+   */
+  const search = (version: 2 | 3) => async (req: FastifyRequest, reply: FastifyReply, user: User) => {
     const q = req.query as Record<string, string>;
     /*
      * Quotes and stars are query syntax, not search terms. Several clients sync the whole
@@ -693,20 +701,20 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     const albums = albumsFor(user).filter((a) => match(a.name) || match(a.artist));
     const artists = [...new Set(mine.map((t) => t.artistName))].filter(match);
 
-    send(req, reply, {
-      searchResult3: {
-        artist: page(artists, q.artistOffset, q.artistCount, 20).map((name) => ({
-          id: `ar-${enc(name)}`,
-          name,
-        })),
-        album: page(albums, q.albumOffset, q.albumCount, 20).map((a) => ({
-          ...a,
-          artistId: `ar-${enc(a.artist)}`,
-          coverArt: a.id,
-        })),
-        song: await songResults(),
-      },
-    });
+    const result = {
+      artist: page(artists, q.artistOffset, q.artistCount, 20).map((name) => ({
+        id: `ar-${enc(name)}`,
+        name,
+      })),
+      album: page(albums, q.albumOffset, q.albumCount, 20).map((a) =>
+        version === 3
+          ? { ...a, artistId: `ar-${enc(a.artist)}`, coverArt: a.id }
+          : // search2's albums are directories: a title and a parent rather than a name and an artistId.
+            { ...a, parent: `ar-${enc(a.artist)}`, isDir: true, title: a.name, album: a.name, coverArt: a.id },
+      ),
+      song: await songResults(),
+    };
+    send(req, reply, version === 3 ? { searchResult3: result } : { searchResult2: result });
 
     /*
      * When the library has no song for this search, look harder, and then look elsewhere.
@@ -722,14 +730,19 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
      */
     async function songResults(): Promise<Record<string, unknown>[]> {
       const offset = Number(q.songOffset ?? 0) || 0;
+      // songCount=0 is a client asking for artists or albums only — Amperfy sends three
+      // searches per keystroke, two of them songless — so there is nothing to look further for.
+      if (q.songCount !== undefined && Number(q.songCount) === 0) return [];
       if (songs.length || !term || offset > 0) return page(songs, q.songOffset, q.songCount, 50).map(songTag);
       const byWords = matchWords(mine, term);
       if (byWords.length) return page(byWords, 0, q.songCount, 50).map(songTag);
       if (!deps.external.enabled()) return [];
-      const hits = await deps.external.search(term, 5);
+      const hits = (await deps.external.search(term, 5)).slice(0, Math.max(Number(q.songCount ?? 5) || 5, 1));
       return hits.map((r) => (r.trackId && userlib.has(user.id, r.trackId) ? songTag(userlib.byId(r.trackId)!) : externalSongTag(r)));
     }
-  });
+  };
+  rest('search3', search(3));
+  rest('search2', search(2));
 
   rest('getSong', async (req, reply, user) => {
     const id = String((req.query as Record<string, string>).id ?? '');
