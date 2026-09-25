@@ -32,6 +32,12 @@ tools is what made them all disagree.
   choose a release, grab it, watch the download, import it, embed lyrics
 - Works with Prowlarr + SABnzbd + qBittorrent if you have them. With none of
   them, crate manages the library you already have
+- **External sources**, as plugins: a source can find songs the library doesn't
+  have and stream them straight away — in the web search, and to Subsonic clients
+  when the library has no match. Kept on request (or, per user, after thirty
+  seconds of listening), a song is downloaded and imported like any other, and
+  the id a client cached keeps working as the library copy. crate itself ships
+  no source; the plugin brings its own tools
 
 **Knowing what it is**
 - MusicBrainz for metadata, Cover Art Archive / Deezer / iTunes for artwork —
@@ -182,6 +188,7 @@ data/crate.db          the database — library, users, plays, playlists, settin
 data/art/              cached artwork (regenerable)
 data/playlist-art/     playlist covers (uploads are NOT regenerable)
 data/plugins/          installed plugins
+data/plugin-data/      what plugins keep for themselves (their tools, caches)
 ```
 
 `crate.db` in WAL mode is safe to copy while running, but a consistent snapshot

@@ -12,7 +12,7 @@ import type { Sab } from '../lib/sab.js';
 import type { Qbit } from '../lib/qbit.js';
 import type { Settings } from '../lib/settings.js';
 import { adminRoutes } from './admin.js';
-import { playRoutes } from './play.js';
+import { playRoutes, streamTrack } from './play.js';
 import { djRoutes } from './dj.js';
 import { Dj } from '../lib/dj.js';
 import type { PageWarmer } from '../lib/warm.js';
@@ -41,7 +41,10 @@ import { score } from '../lib/release.js';
 import { publicUser } from './auth.js';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { PluginState, RETIRED_PLUGIN_IDS, type CratePlugin, type PluginContext } from '../lib/plugin.js';
+import { RETIRED_PLUGIN_IDS, type CratePlugin, type PluginContext, type PluginSettings, type PluginState } from '../lib/plugin.js';
+import type { Ingester } from '../lib/ingest.js';
+import { parseId as parseExternalId, type ExternalCatalog, type ExternalRow } from '../lib/external.js';
+import { streamExternal } from '../lib/externalstream.js';
 import { PLUGINS as BUILTIN_PLUGINS } from '../plugins/index.js';
 import { PluginRepo } from '../lib/pluginrepo.js';
 import { getBytes, getJson, getText } from '../lib/http.js';
@@ -62,6 +65,15 @@ interface Deps {
   plugins: CratePlugin[];
   /** Where installed plugins' downloaded artifacts live. */
   pluginDir: string;
+  /** Where each plugin's own writable data lives: <pluginDataDir>/<id>/. */
+  pluginDataDir: string;
+  /** Which plugins are switched on — shared with OpenSubsonic, so built in main.ts. */
+  pluginState: PluginState;
+  pluginSettings: PluginSettings;
+  /** One file into the library for someone; what ctx.library.ingest calls. */
+  ingester: Ingester;
+  /** Songs from outside the library, their ids, and the keep policy. */
+  external: ExternalCatalog;
   store: Store;
   lastfm: LastFm;
   /** The metadata source: search, discographies, track listings. */
@@ -145,9 +157,9 @@ const emptyRow = {
 
 export function apiRoutes(app: FastifyInstance, deps: Deps): void {
   const { store, lastfm } = deps;
-  // Which plugins are switched on. Constructed here, not at the registration loop below,
-  // because /api/me reports the disabled set and is defined first.
-  const pluginState = new PluginState(deps.db);
+  // Which plugins are switched on. Built in main.ts and shared, because OpenSubsonic needs the
+  // same answer for external sources — two instances would cache two different truths.
+  const pluginState = deps.pluginState;
   // Ids compiled into this build — the ones install/uninstall must refuse to touch.
   const PLUGINS_BUILTIN = new Set(BUILTIN_PLUGINS.map((p) => p.id));
 
@@ -253,6 +265,10 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
       // Whether a streaming password exists, never what it is.
       streamPasswordSet: Boolean(c.id && store.userById(c.id)?.stream_password),
       homePage: (c.id && store.userById(c.id)?.home_page) || 'discover',
+      // Whether thirty seconds of a YouTube (or other external) song adds it by itself, and
+      // which external sources exist at all — the preference is hidden when there are none.
+      autoKeepExternal: Boolean(c.id && store.userById(c.id)?.auto_keep_external),
+      externalSources: deps.external.enabled() ? Object.values(deps.external.labels()) : [],
       viaToken: c.viaToken,
       albumsToday: store.albumsQueuedSince(c.user, since),
       // 0 means unlimited on both. Settings rather than env, so the operator
@@ -268,18 +284,28 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   /**
-   * Per-account preferences. Just the home page for now: which view '/' opens.
+   * Per-account preferences: which view '/' opens, and whether listening to an external song
+   * keeps it. Either may be sent alone; whatever is sent is validated before anything is saved.
    */
   app.post('/api/me/prefs', async (req, reply) => {
     const c = need(req, reply);
     if (!c) return;
     if (!c.id) return reply.code(400).send({ error: 'a token caller has no preferences' });
-    const page = String(((req.body ?? {}) as { homePage?: unknown }).homePage ?? '');
-    if (!['discover', 'mylibrary', 'playlists'].includes(page)) {
+    const b = (req.body ?? {}) as { homePage?: unknown; autoKeepExternal?: unknown };
+    if (b.homePage === undefined && b.autoKeepExternal === undefined) {
+      return reply.code(400).send({ error: 'nothing to change' });
+    }
+    const page = b.homePage === undefined ? null : String(b.homePage);
+    if (page !== null && !['discover', 'mylibrary', 'playlists'].includes(page)) {
       return reply.code(400).send({ error: 'homePage must be discover, mylibrary or playlists' });
     }
-    store.setHomePage(c.id, page);
-    return { ok: true, homePage: page };
+    if (b.autoKeepExternal !== undefined && typeof b.autoKeepExternal !== 'boolean') {
+      return reply.code(400).send({ error: 'autoKeepExternal must be true or false' });
+    }
+    if (page !== null) store.setHomePage(c.id, page);
+    if (typeof b.autoKeepExternal === 'boolean') store.setAutoKeepExternal(c.id, b.autoKeepExternal);
+    const u = store.userById(c.id);
+    return { ok: true, homePage: u?.home_page ?? 'discover', autoKeepExternal: Boolean(u?.auto_keep_external) };
   });
 
   /**
@@ -1110,7 +1136,8 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     }
 
     const since = Math.floor(Date.now() / 1000) - 86400;
-    const already = store.albumsQueuedSince(c.user, since);
+    // Kept external songs share this budget — see the capCheck in main.ts.
+    const already = store.albumsQueuedSince(c.user, since) + (c.id ? deps.external.keptSince(c.id, since) : 0);
 
     try {
       // A track request downloads the album it lives on — Usenet has no other shape —
@@ -1680,6 +1707,124 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     return { tracks };
   });
 
+  /*
+   * ---- external sources, for the web page ------------------------------------------------
+   *
+   * Their own endpoints rather than a field on /api/tracks/search, because an external search
+   * is a subprocess talking to somebody else's servers and takes seconds. Called in parallel,
+   * it arrives when it arrives, and the library and metadata results never wait for it.
+   *
+   * The web page ALWAYS shows this section when a source is enabled (unlike OpenSubsonic,
+   * which falls back only when the library has nothing): on a page you can see both, and a
+   * different version of a song you own is a reasonable thing to want.
+   */
+  const externalView = (row: ExternalRow, userId: number | null) => {
+    const kept = row.trackId !== null && deps.external.trackIdFor(row.id) !== null;
+    return {
+      id: row.id,
+      source: row.source,
+      label: deps.external.labels()[row.source] ?? row.source,
+      title: row.title,
+      artistName: row.artist,
+      albumTitle: row.album ?? '',
+      durationS: row.durationS,
+      state: row.state,
+      // Once kept it is an ordinary library track; the page plays it by trackId from then on.
+      trackId: kept ? row.trackId : null,
+      mine: kept && userId !== null && row.trackId !== null && deps.userlib.has(userId, row.trackId),
+      error: row.state === 'failed' ? row.error : null,
+    };
+  };
+
+  app.get('/api/external/search', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    const q = String((req.query as Record<string, string>).q ?? '').trim();
+    if (q.length < 2 || !deps.external.enabled()) return { enabled: deps.external.enabled(), hits: [] };
+    const hits = await deps.external.search(q, 5);
+    return { enabled: true, hits: hits.map((r) => externalView(r, c.id)) };
+  });
+
+  /** One external song's state, polled by the player while a keep is downloading. */
+  app.get('/api/external/:id', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    const r = await deps.external.resolve(String((req.params as { id: string }).id));
+    if (!r) return reply.code(404).send({ error: 'no such song' });
+    const p = parseExternalId(String((req.params as { id: string }).id))!;
+    const row = deps.external.get(p.source, p.key);
+    if (!row) return reply.code(404).send({ error: 'no such song' });
+    return externalView(row, c.id);
+  });
+
+  /**
+   * The web player's listen report: signal 1 of the keep policy.
+   *
+   * The player sends this after thirty seconds of ACTUAL playback — paused time and time spent
+   * buffering do not count — which is why the web page never needs the server-side heuristic.
+   */
+  app.post('/api/external/:id/listened', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
+    const id = String((req.params as { id: string }).id);
+    if (!(await deps.external.resolve(id))) return reply.code(404).send({ error: 'no such song' });
+    const outcome = await deps.external.listened(c.id, id);
+    const p = parseExternalId(id)!;
+    const row = deps.external.get(p.source, p.key);
+    return {
+      outcome,
+      ...(outcome === 'capped' ? { message: 'over your daily download limit — it will play, but will not be kept' } : {}),
+      ...(row ? externalView(row, c.id) : {}),
+    };
+  });
+
+  /**
+   * Keep an external song because somebody asked: the ⋯ menu on a search row, or the download
+   * button in the player. No listening required, and the same daily cap as everything else.
+   */
+  app.post('/api/external/:id/keep', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
+    const id = String((req.params as { id: string }).id);
+    if (!(await deps.external.resolve(id))) return reply.code(404).send({ error: 'no such song' });
+    const outcome = await deps.external.keep(c.id, id);
+    const p = parseExternalId(id)!;
+    const row = deps.external.get(p.source, p.key);
+    return {
+      outcome,
+      ...(outcome === 'capped' ? { message: 'over your daily download limit — try again tomorrow' } : {}),
+      ...(row ? externalView(row, c.id) : {}),
+    };
+  });
+
+  /** Audio for the in-page player. Kept songs play from the library; the rest are proxied. */
+  app.get('/api/stream/x/:id', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    const r = await deps.external.resolve(String((req.params as { id: string }).id));
+    if (!r) return reply.code(404).send({ error: 'no such song' });
+    if (r.kind === 'track') {
+      const t = deps.userlib.byId(r.trackId);
+      if (!t) return reply.code(404).send({ error: 'no such track' });
+      return streamTrack(req, reply, t.path);
+    }
+    return streamExternal(req, reply, deps.external, r.row);
+  });
+
+  /** Artwork for an external song, proxied so the browser only ever talks to crate. */
+  app.get('/api/external/:id/cover', async (req, reply) => {
+    const c = need(req, reply);
+    if (!c) return;
+    const r = await deps.external.resolve(String((req.params as { id: string }).id));
+    const cover = r?.kind === 'external' ? r.row.coverUrl : null;
+    const img = cover ? await getBytes(cover, { timeoutMs: 10_000 }).catch(() => null) : null;
+    if (!img) return reply.code(404).send({ error: 'no artwork' });
+    reply.header('Content-Type', img.contentType).header('Cache-Control', 'private, max-age=86400');
+    return reply.send(img.body);
+  });
+
   /**
    * Set or clear the separate streaming password.
    *
@@ -2045,6 +2190,10 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     need: (req, reply) => need(req, reply),
     events: deps.notifier,
     http: { getText, getJson, getBytes },
+    library: { ingest: (input, userId) => deps.ingester.ingest(input, userId) },
+    // Per plugin — see ctxFor below. Present here only so the shared object is a whole context.
+    dataDir: deps.pluginDataDir,
+    settings: { get: () => undefined },
     /*
      * A narrow, read-only window onto Song characteristics. Deliberately not the services
      * themselves: a plugin may ask how close things are, and may not write scores or reach the
@@ -2058,6 +2207,24 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
       compareToProfile: (trackId, profile) => deps.similarity.compareToProfile(trackId, profile),
     },
   };
+  /*
+   * Each plugin gets its own copy of the context, because two things in it are per plugin: its
+   * data directory and its settings. Everything else is shared by reference.
+   */
+  const ctxFor = (plugin: CratePlugin): PluginContext => ({
+    ...pluginCtx,
+    dataDir: join(deps.pluginDataDir, plugin.id),
+    settings: deps.pluginSettings.scoped(plugin),
+  });
+  for (const plugin of deps.plugins) {
+    if (!plugin.source) continue;
+    try {
+      deps.external.register(plugin.id, plugin.source(ctxFor(plugin)));
+    } catch (err) {
+      // A source that fails to construct is a missing feature, never a server that will not start.
+      app.log.warn({ plugin: plugin.id, err: (err as Error).message }, 'external source failed to start — skipped');
+    }
+  }
   for (const plugin of deps.plugins) {
     if (!plugin.routes) continue;
     /*
@@ -2073,7 +2240,7 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
           return reply.code(404).send({ error: 'this feature is disabled' });
         }
       });
-      plugin.routes!(scope, pluginCtx);
+      plugin.routes!(scope, ctxFor(plugin));
     });
   }
 
@@ -2130,7 +2297,14 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
         })),
     ];
     return {
-      installed,
+      // Each loaded plugin's declared settings and current values, secrets redacted, so the
+      // admin page can render a form for any plugin without knowing what it is.
+      installed: installed.map((e) => {
+        const plugin = deps.plugins.find((p) => p.id === e.id);
+        return plugin?.settings?.length
+          ? { ...e, settings: { schema: plugin.settings, values: deps.pluginSettings.redacted(plugin) } }
+          : e;
+      }),
       repo: { repo: repo.repo(), token: repo.tokenState() },
       needsRestart: installed.some((p) => p.needsRestart),
     };
@@ -2223,6 +2397,24 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     app.log.warn({ by: c.user }, 'restart requested from the admin page');
     setTimeout(() => process.exit(0), 400);
     return { ok: true };
+  });
+
+  /** Change a plugin's own settings. Only keys it declared; an empty secret keeps the stored one. */
+  app.put('/api/admin/plugins/:id/settings', async (req, reply) => {
+    const c = needAdmin(req, reply);
+    if (!c) return;
+    const plugin = deps.plugins.find((p) => p.id === String((req.params as { id: string }).id));
+    if (!plugin?.settings?.length) return reply.code(404).send({ error: 'that plugin has no settings' });
+    deps.pluginSettings.set(plugin, (req.body ?? {}) as Record<string, unknown>);
+    // Names only, never values: settings can hold secrets.
+    app.log.info({ plugin: plugin.id, keys: Object.keys((req.body ?? {}) as object), by: c.user }, 'plugin settings changed');
+    return switchboard();
+  });
+
+  /** What external sources have kept, or failed to, most recent first. */
+  app.get('/api/admin/external', async (req, reply) => {
+    if (!needAdmin(req, reply)) return;
+    return { enabled: deps.external.enabled(), recent: deps.external.recent(100) };
   });
 
   app.put('/api/admin/plugins/:id', async (req, reply) => {

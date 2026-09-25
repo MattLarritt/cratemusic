@@ -53,6 +53,8 @@ export interface User {
   stream_password: string;
   /** Which page '/' opens: 'discover', 'mylibrary' or 'playlists'. */
   home_page: string;
+  /** 1 when thirty seconds of an external song keeps it; 0 (the default) when only asking does. */
+  auto_keep_external: number;
   enabled: number;
   created_at: number;
   last_login_at: number | null;
@@ -200,6 +202,10 @@ export class Store {
 
   setHomePage(userId: number, page: string): void {
     this.db.prepare('UPDATE users SET home_page = ? WHERE id = ?').run(page, userId);
+  }
+
+  setAutoKeepExternal(userId: number, on: boolean): void {
+    this.db.prepare('UPDATE users SET auto_keep_external = ? WHERE id = ?').run(on ? 1 : 0, userId);
   }
 
   // ---- sessions ----------------------------------------------------------

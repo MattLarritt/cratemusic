@@ -194,6 +194,15 @@ export function IconInfo(p: IconProps) {
   );
 }
 
+/** Download: an arrow into a tray. Keeps an external song that is only streaming. */
+export function IconDownload(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z" />
+    </Svg>
+  );
+}
+
 export function IconPlus(p: IconProps) {
   return (
     <Svg {...p}>

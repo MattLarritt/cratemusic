@@ -194,12 +194,23 @@ export const FFMPEG = process.env.CRATE_FFMPEG || 'ffmpeg';
 export function spawnTranscode(
   path: string,
   p: Plan,
-  opts: { timeOffsetS?: number; ffmpeg?: string } = {},
+  opts: { timeOffsetS?: number; ffmpeg?: string; inputHeaders?: Record<string, string> } = {},
 ): ChildProcessByStdio<null, Readable, null> {
   const target = TARGETS[p.format];
   if (!target) throw new Error(`no transcode target for '${p.format}'`);
 
   const args = ['-hide_banner', '-loglevel', 'error'];
+  /*
+   * An input can be a URL as well as a file — an external source's audio, transcoded on the
+   * way through for a client that asked for a format or a ceiling. A remote input needs two
+   * things a file does not: permission to reconnect, because a long song over somebody else's
+   * CDN will see a dropped connection sooner or later, and whatever headers that CDN insists on.
+   */
+  if (/^https?:\/\//.test(path)) {
+    args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+    const headers = Object.entries(opts.inputHeaders ?? {});
+    if (headers.length) args.push('-headers', headers.map(([k, v]) => `${k}: ${v}\r\n`).join(''));
+  }
   if (opts.timeOffsetS && opts.timeOffsetS > 0) args.push('-ss', String(opts.timeOffsetS));
   args.push('-i', path);
   // Take the first audio stream and drop everything else. Without -vn, embedded cover

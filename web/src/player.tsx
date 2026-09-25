@@ -39,7 +39,16 @@ export interface PlayableTrack {
   artistName: string;
   albumTitle: string;
   durationS: number | null;
+  /**
+   * A song from outside the library — YouTube, say — played by its x- id. trackId is 0 for
+   * these. The id keeps working once the song is kept: the server's /api/stream/x/ route
+   * follows it to the library file, so a queued external song never needs swapping out.
+   */
+  external?: { id: string };
 }
+
+/** A library track, or an external song. Anything else (trackId 0, no external id) cannot play. */
+const isPlayable = (t: PlayableTrack): boolean => t.trackId > 0 || Boolean(t.external);
 
 export interface PlayerApi {
   queue: PlayableTrack[];
@@ -168,8 +177,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const current = queue[index] ?? null;
 
   /** Report a play or a skip. Fire and forget: a failed count must not interrupt audio. */
-  const report = useCallback((trackId: number, skipped: boolean) => {
-    void api.notePlay(trackId, skipped).catch(() => {});
+  const report = useCallback((t: PlayableTrack, skipped: boolean) => {
+    /*
+     * An external song's "played" is the keep policy's listen signal: thirty seconds in, it is
+     * downloaded and added to the library. A skip reports nothing — not keeping it IS the point.
+     * The play count itself is a library concept, so it starts once the song is a library track.
+     */
+    if (t.external) {
+      if (!skipped) void api.externalListened(t.external.id).catch(() => {});
+      return;
+    }
+    void api.notePlay(t.trackId, skipped).catch(() => {});
   }, []);
 
   const loadAndPlay = useCallback(
@@ -184,7 +202,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // arrives and the scrubber sits frozen at the previous song's position.
       setPosition(0);
       setDuration(0);
-      el.src = `/api/stream/${t.trackId}`;
+      el.src = t.external ? `/api/stream/x/${encodeURIComponent(t.external.id)}` : `/api/stream/${t.trackId}`;
       el.volume = volume;
       void el.play().then(
         () => setPlaying(true),
@@ -216,7 +234,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       label = '',
       opts: { shuffle?: boolean | 'held' } = {},
     ) => {
-      const playable = tracks.filter((t) => t.trackId > 0);
+      const playable = tracks.filter(isPlayable);
       if (!playable.length) return;
       const wantShuffle = opts.shuffle === 'held' ? false : (opts.shuffle ?? shuffle);
       const wantFlag = opts.shuffle === undefined ? shuffle : Boolean(opts.shuffle);
@@ -226,7 +244,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const wanted = tracks[startAt];
       const realStart = Math.max(
         0,
-        playable.findIndex((t) => t.trackId === wanted?.trackId),
+        // Identity first: every external song has trackId 0, so matching by id alone would
+        // start at the first external row rather than the one that was clicked.
+        playable.findIndex((t) => t === wanted || (t.trackId > 0 && t.trackId === wanted?.trackId)),
       );
       /**
        * Where a shuffled queue begins.
@@ -262,7 +282,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const enqueue = useCallback(
     (tracks: PlayableTrack[]) => {
-      const playable = tracks.filter((t) => t.trackId > 0);
+      const playable = tracks.filter(isPlayable);
       if (!playable.length) return;
       /*
        * TWO INDEPENDENT UPDATERS, and that is the whole point.
@@ -288,7 +308,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const replaceUpcoming = useCallback(
     (tracks: PlayableTrack[]) => {
       if (!queue.length) return; // Nothing playing: starting a queue is play()'s job.
-      const playable = tracks.filter((t) => t.trackId > 0);
+      const playable = tracks.filter(isPlayable);
       /*
        * History is LINEARISED: the kept part becomes the queue in the order it was heard,
        * regardless of how shuffle scrambled it, so prev still walks back through what actually
@@ -314,7 +334,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (userInitiated = false) => {
       const el = audio.current;
       // A manual skip before the counting threshold is negative evidence, not a play.
-      if (userInitiated && current && !counted.current) report(current.trackId, true);
+      if (userInitiated && current && !counted.current) report(current, true);
 
       if (repeat === 'one' && el && current) {
         el.currentTime = 0;
@@ -451,7 +471,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const threshold = Math.min(30, half > 0 ? half : 30);
         if (el.currentTime >= threshold) {
           counted.current = true;
-          report(current.trackId, false);
+          report(current, false);
         }
       }
     };
@@ -574,5 +594,6 @@ export function playable(t: MyTrack | PlayableTrack): PlayableTrack {
     artistName: t.artistName,
     albumTitle: t.albumTitle,
     durationS: t.durationS,
+    ...('external' in t && t.external ? { external: t.external } : {}),
   };
 }

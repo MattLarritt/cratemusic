@@ -3044,3 +3044,11 @@ header.top {
   cursor: pointer;
   align-self: flex-start;
 }
+
+/* A plugin's own settings, opened under its row. The row wraps so the form takes a full line. */
+.pluginrow { flex-wrap: wrap; }
+.pluginsettings { flex-basis: 100%; margin-top: 0.4rem; }
+.pluginsettings summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.pluginsettings label { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.5rem 0; max-width: 28rem; }
+.pluginsettings label.chk { flex-direction: row; align-items: center; gap: 0.4rem; }
+.pluginsettings .hint { font-size: 0.78rem; }

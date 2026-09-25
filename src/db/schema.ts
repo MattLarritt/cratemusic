@@ -845,6 +845,11 @@ function migrate(db: Database.Database): void {
     // A preference, not navigation state, so it lives on the account.
     db.exec("ALTER TABLE users ADD COLUMN home_page TEXT NOT NULL DEFAULT 'discover'");
   }
+  if (!userCols.has('auto_keep_external')) {
+    // Whether thirty seconds of an external song (a YouTube one, say) adds it to this person's
+    // library by itself. Off by default: without it a song is kept only when they ask.
+    db.exec('ALTER TABLE users ADD COLUMN auto_keep_external INTEGER NOT NULL DEFAULT 0');
+  }
   if (!userCols.has('stream_password')) {
     // Stored recoverably, which is unavoidable and therefore deliberate.
     //

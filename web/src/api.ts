@@ -18,6 +18,10 @@ export interface Me {
   streamPasswordSet?: boolean;
   /** Which page '/' opens for this account. */
   homePage: 'discover' | 'mylibrary' | 'playlists';
+  /** Whether thirty seconds of an external song adds it to the library by itself. Off by default. */
+  autoKeepExternal?: boolean;
+  /** Labels of the external sources switched on ("YouTube"); empty when there are none. */
+  externalSources?: string[];
   albumsToday: number;
   /** 0 = unlimited. */
   dailyAlbumCap: number;
@@ -748,6 +752,52 @@ export interface InstalledPlugin {
   /** Whether this process is actually running its server half. */
   loaded: boolean;
   needsRestart: boolean;
+  /** Present when the plugin declares settings: the schema, and current values (secrets blanked). */
+  settings?: { schema: PluginSettingDef[]; values: Record<string, unknown> };
+}
+
+export interface PluginSettingDef {
+  key: string;
+  label: string;
+  type: 'boolean' | 'string' | 'number' | 'secret';
+  default?: string | number | boolean;
+  hint?: string;
+}
+
+/**
+ * A song from outside the library, as the web page sees it.
+ *
+ * `trackId` is set once it has been kept: from then on it is an ordinary library track, and
+ * the page plays and counts it like one.
+ */
+export interface ExternalHit {
+  id: string;
+  source: string;
+  /** What the section is headed with: "YouTube". */
+  label: string;
+  title: string;
+  artistName: string;
+  albumTitle: string;
+  durationS: number | null;
+  state: 'seen' | 'kept' | 'downloading' | 'imported' | 'failed';
+  trackId: number | null;
+  mine: boolean;
+  /** Why keeping it failed, when it did. */
+  error?: string | null;
+}
+
+/** What asking to keep a song, or listening to one, came to. 'off': listening keeps nothing for you. */
+export type KeepOutcome = 'queued' | 'owned' | 'capped' | 'unknown' | 'off';
+
+export interface ExternalRecent {
+  id: string;
+  source: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  state: ExternalHit['state'];
+  error: string | null;
+  trackId: number | null;
 }
 
 export interface PluginSwitchboard {
@@ -908,6 +958,23 @@ export const api = {
   // ---- tracks and per-user libraries -------------------------------------
   searchTracks: (q: string) =>
     get<{ tracks: TrackHit[] }>(`/api/tracks/search?q=${encodeURIComponent(q)}`),
+  /** Songs from external sources, searched separately because they take seconds. */
+  externalSearch: (q: string) =>
+    get<{ enabled: boolean; hits: ExternalHit[] }>(`/api/external/search?q=${encodeURIComponent(q)}`),
+  externalState: (id: string) => get<ExternalHit>(`/api/external/${encodeURIComponent(id)}`),
+  /** The web player's listen report — thirty seconds in, the song is kept. */
+  externalListened: (id: string) =>
+    post<Partial<ExternalHit> & { outcome: KeepOutcome; message?: string }>(
+      `/api/external/${encodeURIComponent(id)}/listened`,
+      {},
+    ),
+  /** Keep it now, without listening first: the ⋯ menu and the player's download button. */
+  externalKeep: (id: string) =>
+    post<Partial<ExternalHit> & { outcome: KeepOutcome; message?: string }>(
+      `/api/external/${encodeURIComponent(id)}/keep`,
+      {},
+    ),
+  externalCoverUrl: (id: string) => `/api/external/${encodeURIComponent(id)}/cover`,
   myTracks: () =>
     get<{ tracks: MyTrack[]; counts: { tracks: number; artists: number; albums: number } }>(
       '/api/mytracks',
@@ -1066,6 +1133,8 @@ export const api = {
     }>(`/api/import/status${batch ? `?batch=${encodeURIComponent(batch)}` : ''}`),
   setPrefs: (homePage: 'discover' | 'mylibrary' | 'playlists') =>
     post<{ ok: true; homePage: string }>('/api/me/prefs', { homePage }),
+  setAutoKeepExternal: (on: boolean) =>
+    post<{ ok: true; autoKeepExternal: boolean }>('/api/me/prefs', { autoKeepExternal: on }),
   recommendAgain: (artist: string) =>
     post<{ ok: true; cleared: number }>('/api/recommendable', { artist }),
   addExclude: (e: { kind: 'artist' | 'album' | 'track'; artist: string; album?: string; title?: string }) =>
@@ -1144,6 +1213,9 @@ export const api = {
   adminPlugins: () => get<PluginSwitchboard>('/api/admin/plugins'),
   setPluginEnabled: (id: string, enabled: boolean) =>
     put<PluginSwitchboard>(`/api/admin/plugins/${encodeURIComponent(id)}`, { enabled }),
+  savePluginSettings: (id: string, values: Record<string, unknown>) =>
+    put<PluginSwitchboard>(`/api/admin/plugins/${encodeURIComponent(id)}/settings`, values),
+  adminExternal: () => get<{ enabled: boolean; recent: ExternalRecent[] }>('/api/admin/external'),
   adminPluginsAvailable: () =>
     get<{ available: AvailablePlugin[] }>('/api/admin/plugins/available'),
   setPluginSource: (repo: string, token?: string) =>

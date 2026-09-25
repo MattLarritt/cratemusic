@@ -4,6 +4,7 @@ import type { UserLibrary } from './userlib.js';
 import type { Notifier } from './notify.js';
 import type { getBytes, getJson, getText } from './http.js';
 import type { SimilarityResult } from './similarity.js';
+import type { IngestInput, IngestResult } from './ingest.js';
 import { pathToFileURL } from 'node:url';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -94,6 +95,88 @@ export interface PluginContext {
     /** The full comparison, with the closest dimensions and the biggest differences. */
     compareToProfile(trackId: number, profile: Record<string, number>): SimilarityResult;
   };
+  /**
+   * Put a file into the library, for someone. The same dedupe-move-index-override-own sequence
+   * the upload route uses (see lib/ingest.ts), so a plugin that fetches songs cannot get the
+   * order wrong. The file is MOVED.
+   */
+  library: {
+    ingest(input: IngestInput, userId: number): Promise<IngestResult>;
+  };
+  /**
+   * A writable directory that belongs to this plugin alone, under /data. The runtime image has
+   * nowhere else to write, and a plugin that needs a tool, a cache or a staging area needs
+   * somewhere that survives a container rebuild.
+   */
+  dataDir: string;
+  /**
+   * This plugin's own settings, as declared in CratePlugin.settings and set on the admin
+   * plugin page. Read-only from the plugin's side: settings are the admin's decisions, and a
+   * plugin writing its own would make the admin page lie.
+   */
+  settings: {
+    get(key: string): string | number | boolean | undefined;
+  };
+}
+
+/** One song an external source can offer. `key` is the source's own id for it. */
+export interface ExternalHit {
+  key: string;
+  title: string;
+  artist: string;
+  album?: string;
+  durationS?: number;
+  coverUrl?: string;
+  /** The source's own confidence, higher is better. Only used to order one source's hits. */
+  score?: number;
+}
+
+/** Where the audio for a song lives right now. Core proxies it; the plugin never touches HTTP. */
+export interface ExternalStream {
+  url: string;
+  mime: string;
+  headers?: Record<string, string>;
+  sizeBytes?: number;
+  /** Epoch seconds after which the URL stops working, so core knows how long to reuse it. */
+  expiresAt?: number;
+}
+
+/** A song fetched to a local file, ready for ctx.library.ingest. */
+export interface ExternalAcquired {
+  file: string;
+  artist: string;
+  title: string;
+  album?: string;
+  trackNo?: number;
+}
+
+/**
+ * A place songs can come from that is not the library — YouTube, and whatever follows it.
+ *
+ * The split is deliberate: the plugin answers four questions (find this, describe this, where
+ * is its audio, fetch it to a file) and core does everything a person or a client can see —
+ * the ids, authentication, Range, transcoding, when to fall back, when a listen counts, the
+ * import, the caps. That keeps every source behaving identically from the outside, and keeps
+ * the parts that must be right exactly once (auth, the Subsonic protocol) out of plugin code.
+ */
+export interface ExternalSource {
+  /** The <source> in x-<source>-<key>. Short, stable, [a-z0-9]. Changing it orphans every id. */
+  id: string;
+  /** How the web search labels this source's section: "Not in your library — from YouTube". */
+  label: string;
+  search(q: string, limit: number): Promise<ExternalHit[]>;
+  describe(key: string): Promise<ExternalHit | null>;
+  resolveStream(key: string): Promise<ExternalStream>;
+  acquire(key: string, hit: ExternalHit): Promise<ExternalAcquired>;
+}
+
+/** One setting a plugin declares; the admin plugin page renders these generically. */
+export interface PluginSettingDef {
+  key: string;
+  label: string;
+  type: 'boolean' | 'string' | 'number' | 'secret';
+  default?: string | number | boolean;
+  hint?: string;
 }
 
 /**
@@ -181,6 +264,98 @@ export interface CratePlugin {
    * is the collision guard a prefix would otherwise provide.
    */
   routes?(app: FastifyInstance, ctx: PluginContext): void;
+
+  /**
+   * Offer songs from outside the library. A factory rather than an object because a source
+   * needs its context — its data directory, its settings — to exist at all.
+   */
+  source?(ctx: PluginContext): ExternalSource;
+
+  /** Settings the admin can change on this plugin's page. */
+  settings?: PluginSettingDef[];
+}
+
+/**
+ * Per-plugin settings, as the admin set them.
+ *
+ * Framework-owned for the same reason plugin_state is: it is about plugins as a category.
+ * Values are stored as text and coerced on read by the plugin's declared type, so a schema
+ * change (a string setting becoming a number) cannot leave a value the plugin chokes on — it
+ * reads back as the default instead.
+ */
+export class PluginSettings {
+  constructor(private db: Database.Database) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS plugin_settings (
+        plugin_id  TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (plugin_id, key)
+      );
+    `);
+  }
+
+  private raw(pluginId: string): Map<string, string> {
+    const rows = this.db
+      .prepare('SELECT key, value FROM plugin_settings WHERE plugin_id = ?')
+      .all(pluginId) as { key: string; value: string }[];
+    return new Map(rows.map((r) => [r.key, r.value]));
+  }
+
+  /** Every declared setting with its current value — secrets included; callers redact. */
+  values(plugin: Pick<CratePlugin, 'id' | 'settings'>): Record<string, string | number | boolean> {
+    const stored = this.raw(plugin.id);
+    const out: Record<string, string | number | boolean> = {};
+    for (const def of plugin.settings ?? []) out[def.key] = coerce(def, stored.get(def.key));
+    return out;
+  }
+
+  /** What an admin page may see: secrets blanked to "set or not", like core settings. */
+  redacted(plugin: Pick<CratePlugin, 'id' | 'settings'>): Record<string, unknown> {
+    const v = this.values(plugin);
+    const out: Record<string, unknown> = {};
+    for (const def of plugin.settings ?? []) {
+      if (def.type === 'secret') {
+        out[def.key] = '';
+        out[`${def.key}Set`] = Boolean(v[def.key]);
+      } else {
+        out[def.key] = v[def.key];
+      }
+    }
+    return out;
+  }
+
+  /** Only declared keys are written; an empty secret means "keep the stored one". */
+  set(plugin: Pick<CratePlugin, 'id' | 'settings'>, patch: Record<string, unknown>): void {
+    const defs = new Map((plugin.settings ?? []).map((d) => [d.key, d]));
+    const stmt = this.db.prepare(
+      `INSERT INTO plugin_settings (plugin_id, key, value, updated_at) VALUES (?,?,?,unixepoch())
+       ON CONFLICT(plugin_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+    for (const [k, v] of Object.entries(patch)) {
+      const def = defs.get(k);
+      if (!def) continue;
+      if (def.type === 'secret' && (v === '' || v === null || v === undefined)) continue;
+      stmt.run(plugin.id, k, def.type === 'boolean' ? (v === true || v === 'true' || v === '1' ? '1' : '0') : String(v));
+    }
+  }
+
+  /** The read-only view a plugin's context carries. */
+  scoped(plugin: Pick<CratePlugin, 'id' | 'settings'>): PluginContext['settings'] {
+    return { get: (key) => this.values(plugin)[key] };
+  }
+}
+
+function coerce(def: PluginSettingDef, raw: string | undefined): string | number | boolean {
+  const fallback = def.default ?? (def.type === 'boolean' ? false : def.type === 'number' ? 0 : '');
+  if (raw === undefined) return fallback;
+  if (def.type === 'boolean') return raw === '1' || raw === 'true';
+  if (def.type === 'number') {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  return raw;
 }
 
 /**

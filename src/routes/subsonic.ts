@@ -51,6 +51,10 @@ import type { Recommender } from '../lib/recommend.js';
 import { clientIp } from './auth.js';
 import { VERSION_SHORT } from '../lib/version.js';
 import { plan, spawnTranscode } from '../lib/transcode.js';
+import type { ExternalCatalog, ExternalRow } from '../lib/external.js';
+import { streamExternal } from '../lib/externalstream.js';
+import { matchWords } from '../lib/songmatch.js';
+import { getBytes } from '../lib/http.js';
 
 const API_VERSION = '1.16.1';
 const SERVER = 'crate';
@@ -61,6 +65,8 @@ interface SubsonicDeps {
   recommender: Recommender;
   artcache: ArtCache;
   playlistart: PlaylistArt;
+  /** Songs from outside the library, and the ids that keep working once they are kept. */
+  external: ExternalCatalog;
 }
 
 /** Subsonic error codes that matter here. */
@@ -445,6 +451,29 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     };
   }
 
+  /**
+   * A song that is not in the library yet, shaped so a client cannot tell the difference.
+   *
+   * m4a / audio/mp4 regardless of what the source serves, because that is what the stream
+   * endpoint delivers for these (see the YouTube plugin: AAC chosen precisely so iOS's
+   * AVPlayer can play it). No albumId or artistId: there is no album or artist page for a song
+   * crate does not hold, and inventing one would give a client a link to a 404.
+   */
+  function externalSongTag(row: ExternalRow): Record<string, unknown> {
+    return {
+      id: row.id,
+      title: row.title,
+      album: row.album ?? '',
+      artist: row.artist,
+      isDir: false,
+      duration: row.durationS ?? undefined,
+      suffix: 'm4a',
+      contentType: 'audio/mp4',
+      type: 'music',
+      coverArt: row.id,
+    };
+  }
+
   // ---- system -----------------------------------------------------------
 
   rest('ping', (req, reply) => send(req, reply, {}));
@@ -638,9 +667,15 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     });
   });
 
-  rest('search3', (req, reply, user) => {
+  rest('search3', async (req, reply, user) => {
     const q = req.query as Record<string, string>;
-    const term = String(q.query ?? '').replace(/\*/g, '').trim().toLowerCase();
+    /*
+     * Quotes and stars are query syntax, not search terms. Several clients sync the whole
+     * library by searching for "" — two literal quote characters — which is not an empty string,
+     * so it matched no song at all and, with an external source behind search3, went off to
+     * YouTube as a search for a pair of quote marks. Stripped, it is what it means: everything.
+     */
+    const term = String(q.query ?? '').replace(/[*"]/g, '').trim().toLowerCase();
     const mine = userlib.mine(user.id, 20_000);
     const match = (s: string) => !term || s.toLowerCase().includes(term);
 
@@ -669,9 +704,43 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
           artistId: `ar-${enc(a.artist)}`,
           coverArt: a.id,
         })),
-        song: page(songs, q.songOffset, q.songCount, 50).map(songTag),
+        song: await songResults(),
       },
     });
+
+    /*
+     * When the library has no song for this search, look harder, and then look elsewhere.
+     *
+     * Only for a real search (a term — an empty query is how clients sync whole libraries, and
+     * must never become a YouTube search per sync) and only on the first page (a client paging
+     * past the end has already seen everything there is).
+     *
+     * Word by word first: "song 2 by blur" matches no single field, and a song you own must
+     * never lose to somebody else's upload of it. Only when that also finds nothing does an
+     * external source get asked — so "Hey Siri, play X" plays your copy when you have one and
+     * still plays something when you do not.
+     */
+    async function songResults(): Promise<Record<string, unknown>[]> {
+      const offset = Number(q.songOffset ?? 0) || 0;
+      if (songs.length || !term || offset > 0) return page(songs, q.songOffset, q.songCount, 50).map(songTag);
+      const byWords = matchWords(mine, term);
+      if (byWords.length) return page(byWords, 0, q.songCount, 50).map(songTag);
+      if (!deps.external.enabled()) return [];
+      const hits = await deps.external.search(term, 5);
+      return hits.map((r) => (r.trackId && userlib.has(user.id, r.trackId) ? songTag(userlib.byId(r.trackId)!) : externalSongTag(r)));
+    }
+  });
+
+  rest('getSong', async (req, reply, user) => {
+    const id = String((req.query as Record<string, string>).id ?? '');
+    const t = trackFor(user, id);
+    if (t) return send(req, reply, { song: songTag(t) });
+    // An external song, or one somebody else kept — describe it either way.
+    const r = id.startsWith('x-') ? await deps.external.resolve(id) : null;
+    if (r?.kind === 'external') return send(req, reply, { song: externalSongTag(r.row) });
+    const kept = r?.kind === 'track' ? userlib.byId(r.trackId) : null;
+    if (kept) return send(req, reply, { song: songTag(kept) });
+    return fail(req, reply, ERR.NOT_FOUND, 'Song not found');
   });
 
   /*
@@ -722,13 +791,6 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     send(req, reply, {
       songsByGenre: { song: userlib.byGenre(user.id, genre, count, offset).map(songTag) },
     });
-  });
-
-  rest('getSong', (req, reply, user) => {
-    const id = String((req.query as Record<string, string>).id ?? '');
-    const t = trackFor(user, id);
-    if (!t) return fail(req, reply, ERR.NOT_FOUND, 'Song not found');
-    send(req, reply, { song: songTag(t) });
   });
 
   // ---- playlists ----------------------------------------------------------
@@ -800,7 +862,7 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     if (!name) return fail(req, reply, ERR.MISSING_PARAM, 'name is required');
     const id = userlib.createPlaylist(user.id, name.slice(0, 100));
     for (const sid of many(q, 'songId')) {
-      const t = trackFor(user, sid);
+      const t = trackFor(user, sid) ?? adoptKept(user, sid);
       if (t) userlib.addToPlaylist(id, t.trackId);
     }
     const pl = userlib.playlist(user.id, id);
@@ -821,7 +883,7 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     for (const sid of many(q, 'songIdToAdd')) {
       // Only songs the caller holds: the playlist references their library,
       // same rule as the web app.
-      const t = trackFor(user, sid);
+      const t = trackFor(user, sid) ?? adoptKept(user, sid);
       if (t) userlib.addToPlaylist(pl.id, t.trackId);
     }
 
@@ -862,10 +924,14 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
    *
    * Answering this is also what stops a client retrying it forever.
    */
-  rest('scrobble', (req, reply, user) => {
+  rest('scrobble', async (req, reply, user) => {
     const q = req.query as Record<string, string>;
     const id = String(q.id ?? '');
     const submission = String(q.submission ?? 'true').toLowerCase() !== 'false';
+    // "This was played" is the most reliable listen signal there is, so it keeps an external
+    // song at once for somebody who keeps by listening (the catalog checks that). Done first:
+    // once kept, the song is theirs and counts like any other play.
+    if (submission && id.startsWith('x-')) await deps.external.listened(user.id, id);
     const t = trackFor(user, id);
     if (t && submission) {
       store.noteSeed(t.artistName, 'listen');
@@ -876,11 +942,37 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     send(req, reply, {});
   });
 
-  rest('star', (req, reply) => send(req, reply, {}));
+  /**
+   * Starring an external song keeps it.
+   *
+   * A phone client has no "download this" button for a song that is not in the library, but
+   * every one of them has a heart or a star, and "I like this one" is exactly the request. For
+   * library songs star is still a no-op. `id` may repeat, per the spec.
+   */
+  rest('star', async (req, reply, user) => {
+    const raw = (req.query as Record<string, string | string[]>).id;
+    const ids = (Array.isArray(raw) ? raw : raw ? [raw] : []).map(String).filter((i) => i.startsWith('x-'));
+    for (const id of ids) await deps.external.keep(user.id, id);
+    send(req, reply, {});
+  });
   rest('unstar', (req, reply) => send(req, reply, {}));
   rest('setRating', (req, reply) => send(req, reply, {}));
 
   // ---- media ------------------------------------------------------------
+
+  /**
+   * A kept external song this person does not own yet, granted to them.
+   *
+   * For playlists: adding a song to a playlist is as deliberate a "keep" as there is, and a
+   * playlist can only hold what its owner holds.
+   */
+  function adoptKept(user: User, id: string): ReturnType<typeof trackFor> {
+    if (!id.startsWith('x-')) return null;
+    const trackId = deps.external.trackIdFor(id);
+    if (trackId === null) return null;
+    userlib.add(user.id, trackId, 'external');
+    return userlib.byId(trackId);
+  }
 
   /** A track the caller actually holds, or null. This is the access check. */
   function trackFor(
@@ -897,9 +989,14 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     sizeBytes: number;
     path: string;
   } | null {
-    if (!id.startsWith('t-')) return null;
-    const trackId = Number(id.slice(2));
-    if (!Number.isFinite(trackId)) return null;
+    /*
+     * A kept external song IS its library track: once someone has kept x-youtube-…, that id
+     * resolves here exactly as its t- id does, so every endpoint below treats it identically
+     * with no special case of its own. Clients cache ids, and this is what keeps the cached
+     * one working.
+     */
+    const trackId = id.startsWith('t-') ? Number(id.slice(2)) : id.startsWith('x-') ? deps.external.trackIdFor(id) : null;
+    if (trackId === null || !Number.isFinite(trackId)) return null;
     // The whole point: holding it is what grants access, not merely existing on disk.
     if (!userlib.has(user.id, trackId)) return null;
     return userlib.byId(trackId);
@@ -918,8 +1015,25 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
    * refuse to play at all.
    */
   const streamHandler = async (req: FastifyRequest, reply: FastifyReply, user: User) => {
-    const id = String((req.query as Record<string, string>).id ?? '');
-    const t = trackFor(user, id);
+    const q = req.query as Record<string, string>;
+    const id = String(q.id ?? '');
+    // Signal 3 of the keep policy: an external stream still going in 30 seconds is kept, and
+    // starting any other song — library ones included — is the skip that cancels it.
+    deps.external.streamStarted(user.id, id);
+    let t = trackFor(user, id);
+    if (!t && id.startsWith('x-')) {
+      const r = await deps.external.resolve(id);
+      if (r?.kind === 'track') {
+        // Somebody kept it already. Play the file; the timer above grants it to this person.
+        t = userlib.byId(r.trackId);
+      } else if (r?.kind === 'external') {
+        return streamExternal(req, reply, deps.external, r.row, {
+          ...(q.format ? { format: q.format } : {}),
+          maxBitRate: Number(q.maxBitRate) || 0,
+          timeOffsetS: Number(q.timeOffset) || 0,
+        });
+      }
+    }
     if (!t) return fail(req, reply, ERR.NOT_FOUND, 'Song not found in your library');
 
     let size: number;
@@ -930,7 +1044,6 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
     }
 
     const type = MIME[extname(t.path).toLowerCase()] ?? 'application/octet-stream';
-    const q = req.query as Record<string, string>;
 
     /*
      * Transcode only when the client actually asked for something it is not getting.
@@ -1074,6 +1187,20 @@ export function subsonicRoutes(app: FastifyInstance, deps: SubsonicDeps): void {
       if (!art) return fail(req, reply, ERR.NOT_FOUND, 'Cover art not found');
       reply.header('Content-Type', art.contentType).header('Cache-Control', 'max-age=86400');
       return reply.send(art.body);
+    }
+
+    /*
+     * An external song's own artwork, proxied: the client only ever sees crate's URL, so an
+     * expiring or address-bound image link never ends up cached on somebody's phone.
+     * Kept songs fall through to trackFor below and get their album's art like anything else.
+     */
+    if (id.startsWith('x-') && !trackFor(user, id)) {
+      const r = await deps.external.resolve(id);
+      const cover = r?.kind === 'external' ? r.row.coverUrl : null;
+      const img = cover ? await getBytes(cover, { timeoutMs: 10_000 }).catch(() => null) : null;
+      if (!img) return fail(req, reply, ERR.NOT_FOUND, 'Cover art not found');
+      reply.header('Content-Type', img.contentType).header('Cache-Control', 'max-age=86400');
+      return reply.send(img.body);
     }
 
     const parts = albumParts(id);

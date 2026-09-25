@@ -1,12 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { PlayerProvider, playable, usePlayer, usePosition } from './player.js';
+import { PlayerProvider, playable, usePlayer, usePosition, type PlayableTrack } from './player.js';
 import { currentPreviewKey, playPreview, stopPreview, usePreviewing } from './preview.js';
 import { Artwork } from './artwork.js';
 import { applyTheme, readTheme, setTheme, type Theme } from './theme.js';
 import { Orbs } from './visualizer.js';
 import { STACKED, WORDMARK } from './logo.js';
 import { InfoRow, Modal, WithMenu, type MenuItem } from './menu.js';
+import { isKeptByMe, keepExternal, useExternal } from './externalstate.js';
 import { consumePanelRequest, loadDynamicUiPlugins, setDisabledPlugins } from './plugins/runtime.js';
 import { UI_PLUGINS, useUiPlugins } from './plugins/index.js';
 import {
@@ -45,6 +46,7 @@ import {
   IconNext,
   IconPause,
   IconPlay,
+  IconDownload,
   IconInfo,
   IconPlus,
   IconPrev,
@@ -89,6 +91,9 @@ import {
   type Playlist,
   type RecSet,
   type TrackHit,
+  type ExternalHit,
+  type ExternalRecent,
+  type PluginSettingDef,
   type TrackInfo,
   type AnalysisProgress,
   type WarmProgress,
@@ -661,7 +666,7 @@ export function App() {
           <HomeView say={say} />
         ))}
         {view.name === 'discover' && <HomeView say={say} />}
-        {view.name === 'search' && <SearchView q={view.q} say={say} />}
+        {view.name === 'search' && <SearchView q={view.q} me={me} say={say} />}
         {view.name === 'artist' && (
           <ArtistView
             key={view.mbid}
@@ -721,7 +726,7 @@ export function App() {
 
       {/* Outside the view switch on purpose: the audio element it drives must survive
           navigation, or playback stops every time somebody clicks a link. */}
-      <PlayBar say={say} />
+      <PlayBar say={say} autoKeep={Boolean(me?.autoKeepExternal)} />
     </>
   );
 }
@@ -1975,14 +1980,17 @@ const WIDE_SETTLE_MS = 750;
 
 function SearchView({
   q,
+  me,
   say,
 }: {
   q: string;
+  me: Me | null;
   say: (k: 'good' | 'bad', t: string) => void;
 }) {
   const [local, setLocal] = useState<LocalSearch | null>(null);
   const [res, setRes] = useState<SearchResult | null>(null);
   const [wideTracks, setWideTracks] = useState<TrackHit[] | null>(null);
+  const [external, setExternal] = useState<ExternalHit[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const wide = useSyncExternalStore(subscribeWide, () => wideSeq);
   // Answers arriving out of order must not clobber newer ones — the guard is one shared
@@ -2008,6 +2016,7 @@ function SearchView({
   useEffect(() => {
     setRes(null);
     setWideTracks(null);
+    setExternal(null);
     setErr(null);
     const my = seq.current;
     const delay = consumeWideNow() ? 0 : WIDE_SETTLE_MS;
@@ -2027,6 +2036,16 @@ function SearchView({
         })
         .catch(() => {
           if (seq.current === my) setWideTracks([]);
+        });
+      // External sources separately and in parallel: they take seconds, and the rest of the
+      // page must never wait for them. A failure is silence, not an error on the page.
+      api
+        .externalSearch(q)
+        .then((r) => {
+          if (seq.current === my) setExternal(r.hits);
+        })
+        .catch(() => {
+          if (seq.current === my) setExternal([]);
         });
     }, delay);
     return () => window.clearTimeout(t);
@@ -2056,13 +2075,16 @@ function SearchView({
 
   const nothingLocal = !tracks.length && !local.artists.length && !local.albums.length;
   if (nothingLocal && searching) return <div className="spinner">Searching…</div>;
-  if (nothingLocal && !wideArtists.length && !wideAlbums.length) {
+  if (nothingLocal && !wideArtists.length && !wideAlbums.length && !external?.length) {
     return err ? <div className="note bad">{err}</div> : <div className="empty">Nothing found for “{q}”.</div>;
   }
 
   return (
     <>
       <SongResults q={q} say={say} tracks={tracks} onChanged={reload} />
+      {external && external.length > 0 && (
+        <ExternalResults hits={external} q={q} autoKeep={Boolean(me?.autoKeepExternal)} say={say} />
+      )}
 
       {local.artists.length > 0 && (
         <>
@@ -3260,6 +3282,25 @@ function PrefsPane({
 }) {
   const [home, setHome] = useState<Me['homePage']>(me?.homePage ?? 'discover');
   const [savingHome, setSavingHome] = useState(false);
+  const [autoKeep, setAutoKeep] = useState(Boolean(me?.autoKeepExternal));
+  const [savingKeep, setSavingKeep] = useState(false);
+  const sources = me?.externalSources ?? [];
+
+  const pickAutoKeep = (on: boolean) => {
+    setAutoKeep(on);
+    setSavingKeep(true);
+    void api
+      .setAutoKeepExternal(on)
+      .then(() => {
+        onPrefsChanged();
+        say('good', on ? 'Songs you listen to for 30 seconds will be kept' : 'Songs are kept only when you ask');
+      })
+      .catch((e: Error) => {
+        setAutoKeep(!on);
+        say('bad', e.message);
+      })
+      .finally(() => setSavingKeep(false));
+  };
 
   const pickHome = (v: Me['homePage']) => {
     setHome(v);
@@ -3297,6 +3338,24 @@ function PrefsPane({
           ))}
         </div>
       </div>
+      {/* Only when a source exists: a setting for a feature that is switched off is a puzzle. */}
+      {sources.length > 0 && (
+        <div className="field">
+          <label className="chk">
+            <input
+              type="checkbox"
+              checked={autoKeep}
+              disabled={savingKeep}
+              onChange={(e) => pickAutoKeep(e.target.checked)}
+            />{' '}
+            Add songs from {sources.join(' and ')} to my library after I’ve listened for 30 seconds
+          </label>
+          <div className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>
+            Off: they only stream, until you choose Add to library from the ⋯ menu, press download
+            in the player, or star the song in a Subsonic app.
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -5708,6 +5767,108 @@ function AdminView({
  * shown again. And RESTART, because a downloaded server half only boards at boot — under
  * compose, an orderly exit is a restart, so the button completes the story the install starts.
  */
+/**
+ * A plugin's own settings, rendered from the schema it declared.
+ *
+ * Generic on purpose: the admin page does not know what any plugin is for, and should not
+ * have to change when one arrives. A secret shows only whether it is set, and an empty secret
+ * field means "keep the one stored" — the same rule every other settings form here follows.
+ */
+function PluginSettingsForm({
+  pluginId,
+  schema,
+  values,
+  onSaved,
+  say,
+}: {
+  pluginId: string;
+  schema: PluginSettingDef[];
+  values: Record<string, unknown>;
+  onSaved: (b: PluginSwitchboard) => void;
+  say: (k: 'good' | 'bad', t: string) => void;
+}) {
+  const [draft, setDraft] = useState<Record<string, unknown>>(() =>
+    Object.fromEntries(schema.map((d) => [d.key, d.type === 'secret' ? '' : values[d.key]])),
+  );
+  const [saving, setSaving] = useState(false);
+  return (
+    <details className="pluginsettings">
+      <summary>Settings</summary>
+      {schema.map((d) => (
+        <label key={d.key} className={d.type === 'boolean' ? 'chk' : undefined}>
+          {d.type === 'boolean' ? (
+            <>
+              <input
+                type="checkbox"
+                checked={Boolean(draft[d.key])}
+                onChange={(e) => setDraft({ ...draft, [d.key]: e.target.checked })}
+              />{' '}
+              {d.label}
+            </>
+          ) : (
+            <>
+              <span className="lbl">
+                {d.label}
+                {d.type === 'secret' && values[`${d.key}Set`] ? ' (set — leave blank to keep)' : ''}
+              </span>
+              <input
+                type={d.type === 'number' ? 'number' : d.type === 'secret' ? 'password' : 'text'}
+                value={String(draft[d.key] ?? '')}
+                onChange={(e) => setDraft({ ...draft, [d.key]: e.target.value })}
+              />
+            </>
+          )}
+          {d.hint && <span className="hint muted">{d.hint}</span>}
+        </label>
+      ))}
+      <button
+        className="btn sm"
+        disabled={saving}
+        onClick={() => {
+          setSaving(true);
+          api
+            .savePluginSettings(pluginId, draft)
+            .then(onSaved)
+            .catch((e: Error) => say('bad', e.message))
+            .finally(() => setSaving(false));
+        }}
+      >
+        {saving ? 'Saving…' : 'Save settings'}
+      </button>
+    </details>
+  );
+}
+
+/** What external sources have kept lately, and what failed — so a failure is visible somewhere. */
+function ExternalActivity() {
+  const [data, setData] = useState<{ enabled: boolean; recent: ExternalRecent[] } | null>(null);
+  useEffect(() => {
+    api.adminExternal().then(setData).catch(() => setData(null));
+  }, []);
+  if (!data || (!data.enabled && !data.recent.length)) return null;
+  return (
+    <>
+      <h3 className="plsection">Kept from external sources</h3>
+      {!data.recent.length && <p className="muted">Nothing kept yet.</p>}
+      <div className="pluginrows">
+        {data.recent.slice(0, 30).map((r) => (
+          <div key={r.id} className="pluginrow">
+            <div className="words">
+              <span className="t">
+                {r.artist} — {r.title}
+              </span>
+              <span className="s muted">
+                {r.source} · {r.state}
+                {r.error ? ` · ${r.error}` : ''}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   const [board, setBoard] = useState<PluginSwitchboard | null>(null);
   const [available, setAvailable] = useState<AvailablePlugin[] | null>(null);
@@ -5871,10 +6032,23 @@ function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) 
                 Uninstall
               </button>
             )}
+            {pl.settings && (
+              <PluginSettingsForm
+                pluginId={pl.id}
+                schema={pl.settings.schema}
+                values={pl.settings.values}
+                onSaved={(b) => {
+                  setBoard(b);
+                  say('good', `${pl.name} settings saved`);
+                }}
+                say={say}
+              />
+            )}
           </div>
         ))}
         {board.installed.length === 0 && <p className="muted">Nothing installed yet.</p>}
       </div>
+      <ExternalActivity />
 
       <h3 className="plsection">Repository</h3>
       <p className="muted sm">
@@ -8017,6 +8191,209 @@ function SongResults({
   );
 }
 
+/**
+ * Songs an external source can play that the library does not hold.
+ *
+ * A separate section, headed by the source, rather than rows mixed into Songs: a YouTube
+ * upload and a file you own are different things, and pretending otherwise would make it
+ * impossible to tell which one you are about to hear. On OpenSubsonic the two DO blend —
+ * see search3 — because a phone client cannot show a second section; here it can.
+ */
+function ExternalResults({
+  hits,
+  q,
+  autoKeep,
+  say,
+}: {
+  hits: ExternalHit[];
+  q: string;
+  /** Whether listening keeps a song for this person, or only asking does. */
+  autoKeep: boolean;
+  say: (k: 'good' | 'bad', t: string) => void;
+}) {
+  const p = usePlayer();
+  const label = hits[0]?.label ?? 'elsewhere';
+  // Played as one queue in the order shown, so "next" moves down the list rather than stopping.
+  const queue = hits.map(
+    (h): PlayableTrack =>
+      h.trackId
+        ? { trackId: h.trackId, title: h.title, artistName: h.artistName, albumTitle: h.albumTitle, durationS: h.durationS }
+        : { trackId: 0, title: h.title, artistName: h.artistName, albumTitle: h.albumTitle, durationS: h.durationS, external: { id: h.id } },
+  );
+  return (
+    <>
+      <div className="rowhead">
+        <h2>Not in your library</h2>
+        <span className="reason">
+          from {label} · {autoKeep ? 'kept once you’ve listened for 30 seconds' : 'plays now, ⋯ to add it to your library'}
+        </span>
+      </div>
+      <div className="songrows">
+        {hits.map((h, i) => (
+          <ExternalRow
+            key={h.id}
+            hit={h}
+            autoKeep={autoKeep}
+            playing={
+              p.current
+                ? p.current.external
+                  ? p.current.external.id === h.id
+                  : Boolean(h.trackId) && p.current.trackId === h.trackId
+                : false
+            }
+            onPlay={() => p.play(queue, i, `“${q}” on ${label}`)}
+            say={say}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** The state of an external song as a chip, or nothing when there is nothing to say. */
+function externalChip(row: ExternalHit): { text: string; cls: string } | null {
+  if (row.state === 'imported' && row.mine) return { text: 'in your library', cls: 'tag held' };
+  if (row.state === 'kept' || row.state === 'downloading') return { text: 'downloading…', cls: 'tag' };
+  if (row.state === 'failed') return { text: 'could not keep', cls: 'tag' };
+  return null;
+}
+
+function ExternalRow({
+  hit,
+  autoKeep,
+  playing,
+  onPlay,
+  say,
+}: {
+  hit: ExternalHit;
+  autoKeep: boolean;
+  playing: boolean;
+  onPlay: () => void;
+  say: (k: 'good' | 'bad', t: string) => void;
+}) {
+  const row = useExternal(hit.id, { seed: hit, say, listening: playing && autoKeep }) ?? hit;
+  const [failedArt, setFailedArt] = useState(false);
+  const [info, setInfo] = useState(false);
+  const chip = externalChip(row);
+
+  const items: MenuItem[] = [
+    isKeptByMe(row)
+      ? { label: 'Add to library', disabled: true, hint: 'already yours', onSelect: () => undefined }
+      : row.state === 'kept' || row.state === 'downloading'
+        ? { label: 'Add to library', disabled: true, hint: 'downloading', onSelect: () => undefined }
+        : {
+            label: row.state === 'failed' ? 'Try again' : 'Add to library',
+            hint: 'downloads',
+            onSelect: () => void keepExternal(row.id, row.title, say).catch((e: Error) => say('bad', e.message)),
+          },
+    { label: 'Info', onSelect: () => setInfo(true) },
+  ];
+
+  return (
+    <>
+      <WithMenu items={items} className="songrowwrap">
+        <div className={`songrow${playing ? ' playing' : ''}`} onClick={onPlay}>
+          <div className="cover">
+            {!failedArt ? (
+              <img src={api.externalCoverUrl(row.id)} alt="" loading="lazy" onError={() => setFailedArt(true)} />
+            ) : (
+              <span>{row.title.slice(0, 1).toUpperCase()}</span>
+            )}
+          </div>
+          <div className="words">
+            <div className="t">{row.title}</div>
+            <div className="s">
+              {row.artistName}
+              {chip && (
+                <>
+                  {' '}
+                  <span className={chip.cls}>{chip.text}</span>
+                </>
+              )}
+            </div>
+          </div>
+          {row.durationS ? <div className="len">{secs(row.durationS)}</div> : null}
+          <button
+            className="pbicon sm"
+            title="Play"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlay();
+            }}
+          >
+            <IconPlay />
+          </button>
+        </div>
+      </WithMenu>
+      {info && <ExternalInfoModal hit={row} say={say} onClose={() => setInfo(false)} />}
+    </>
+  );
+}
+
+/**
+ * What crate knows about a song it does not have yet, and the button to get it.
+ *
+ * Deliberately short next to the library's info panel: there is no file to read, so no format,
+ * bitrate or lyrics — only what the source said, and where the keep has got to. Once the song is
+ * in the library, the full panel takes over.
+ */
+function ExternalInfoModal({
+  hit,
+  say,
+  onClose,
+}: {
+  hit: ExternalHit;
+  say: (k: 'good' | 'bad', t: string) => void;
+  onClose: () => void;
+}) {
+  const row = useExternal(hit.id, { seed: hit, say }) ?? hit;
+  const [busy, setBusy] = useState(false);
+  const [failedArt, setFailedArt] = useState(false);
+  if (row.trackId && row.mine) return <TrackInfoModal trackId={row.trackId} onClose={onClose} />;
+
+  const inFlight = row.state === 'kept' || row.state === 'downloading';
+  const status =
+    row.state === 'imported'
+      ? 'on the server — adding it is instant'
+      : inFlight
+        ? 'downloading now'
+        : row.state === 'failed'
+          ? 'the last download failed'
+          : `not downloaded — playing streams it from ${row.label}`;
+
+  return (
+    <Modal title={row.title} onClose={onClose}>
+      <div className="previewhead">
+        {!failedArt && <img src={api.externalCoverUrl(row.id)} alt="" onError={() => setFailedArt(true)} />}
+        <div>
+          <div className="t">{row.title}</div>
+          <div className="muted">{row.artistName}</div>
+        </div>
+      </div>
+      <InfoRow label="Artist" value={row.artistName} />
+      <InfoRow label="Album" value={row.albumTitle || null} />
+      <InfoRow label="Length" value={row.durationS ? secs(row.durationS) : null} />
+      <InfoRow label="From" value={row.label} />
+      <InfoRow label="Status" value={status} />
+      <InfoRow label="Error" value={row.state === 'failed' ? row.error : null} />
+      <div className="acts" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+        <button
+          className="btn"
+          disabled={busy || inFlight}
+          onClick={() => {
+            setBusy(true);
+            void keepExternal(row.id, row.title, say)
+              .catch((e: Error) => say('bad', e.message))
+              .finally(() => setBusy(false));
+          }}
+        >
+          {inFlight ? 'Downloading…' : busy ? 'Asking…' : row.state === 'failed' ? 'Try again' : 'Add to library'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function MyLibraryView({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   const p = usePlayer();
   const [songs, setSongs] = useState<(MyTrack & { plays: number })[] | null>(null);
@@ -8970,8 +9347,17 @@ function DjInsightPanel({
   );
 }
 
-function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
+function PlayBar({ say, autoKeep }: { say: (k: 'good' | 'bad', t: string) => void; autoKeep: boolean }) {
   const p = usePlayer();
+  /*
+   * An external song — YouTube, say — playing without being in the library. Once it is kept it
+   * becomes an ordinary library track, and `trackId` below is that track: rating, info, playlists
+   * and the plugin panels all work on it from then on, while the stream carries on uninterrupted.
+   */
+  const extId = p.current?.external?.id ?? null;
+  const ext = useExternal(extId, { say, listening: autoKeep });
+  const trackId = p.current?.trackId || (isKeptByMe(ext) && ext?.trackId ? ext.trackId : 0);
+  const [keeping, setKeeping] = useState(false);
   // Registered minus admin-disabled — a toggle removes the button without a refresh.
   const uiPlugins = useUiPlugins();
   /*
@@ -8985,13 +9371,13 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   const [openPanel, setOpenPanel] = useState<string | null>(null);
   const togglePanel = (id: string) => setOpenPanel((cur) => (cur === id ? null : id));
   const [ratePopup, setRatePopup] = useState(false);
-  const [rating, rate] = useCurrentRating(p.current?.trackId ?? null);
+  const [rating, rate] = useCurrentRating(trackId || null);
   const [picking, setPicking] = useState(false);
   const [info, setInfo] = useState(false);
   // The DJ: session flag re-renders the cluster on start/stop; busy debounces double-taps.
   const djActive = useDjActive();
   // The thumb you pressed stays lit while this song plays (and again if you come back to it).
-  const djVote = useDjVote(p.current?.trackId ?? null);
+  const djVote = useDjVote(trackId || null);
   const [djBusy, setDjBusy] = useState(false);
   const castVote = (direction: 'more' | 'less') => {
     if (djBusy) return;
@@ -9036,6 +9422,26 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   // and that is the only thing somebody needs from this button.
   const abLabel = p.abA === null ? 'A–B' : p.abB === null ? 'set B' : 'on';
 
+  // Streaming, not yet in the library: one press keeps it, no thirty seconds required.
+  const extBusy = ext?.state === 'kept' || ext?.state === 'downloading';
+  const downloadButton =
+    extId && !trackId ? (
+      <button
+        className={`pbicon${extBusy ? ' on' : ''}`}
+        title={extBusy ? 'Downloading…' : ext?.state === 'failed' ? 'Download failed — try again' : 'Add to your library'}
+        aria-label="Add to your library"
+        disabled={keeping || extBusy}
+        onClick={() => {
+          setKeeping(true);
+          void keepExternal(extId, p.current?.title ?? 'the song', say)
+            .catch((e: Error) => say('bad', e.message))
+            .finally(() => setKeeping(false));
+        }}
+      >
+        <IconDownload />
+      </button>
+    ) : null;
+
   return (
     <div className="playbar">
       {/* The whole now-playing block opens the album page — the natural answer
@@ -9056,7 +9462,11 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
       >
         <Art
           images={{
-            poster: `/api/art/album?artist=${encodeURIComponent(p.current.artistName)}&album=${encodeURIComponent(p.current.albumTitle)}`,
+            // A streaming-only song has no album art of ours yet; its own thumbnail stands in.
+            poster:
+              extId && !trackId
+                ? api.externalCoverUrl(extId)
+                : `/api/art/album?artist=${encodeURIComponent(p.current.artistName)}&album=${encodeURIComponent(p.current.albumTitle)}`,
           }}
           label={p.current.title}
         />
@@ -9213,13 +9623,17 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
         {/* The song playing is the one you most often want to know about, and until now the
             only route to its details was finding the row it came from — which for a DJ or
             shuffle queue may not be on screen at all. */}
-        <button className="pbicon" title="Song info" onClick={() => setInfo(true)}>
+        {downloadButton}
+        <button className="pbicon" title="Song info" disabled={!trackId && !ext} onClick={() => setInfo(true)}>
           <IconInfo />
         </button>
-        {/* What is playing is the thing you most often want to keep. */}
-        <button className="pbicon" title="Add to a playlist" onClick={() => setPicking(true)}>
-          <IconPlus />
-        </button>
+        {/* What is playing is the thing you most often want to keep. A playlist holds library
+            songs, so a streaming-only one has to be downloaded first — the button beside this. */}
+        {trackId > 0 && (
+          <button className="pbicon" title="Add to a playlist" onClick={() => setPicking(true)}>
+            <IconPlus />
+          </button>
+        )}
         <button
           className={`pbicon${openPanel === 'lyrics' ? ' on' : ''}`}
           title="Lyrics"
@@ -9257,22 +9671,26 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
             {(rating ?? 0) > 0 ? '★' : '☆'}
           </button>
         )}
+        {downloadButton}
         <button
           className="pbicon"
           title="Song info"
           aria-label="Song info"
+          disabled={!trackId && !ext}
           onClick={() => setInfo(true)}
         >
           <IconInfo />
         </button>
-        <button
-          className="pbicon"
-          title="Add to a playlist"
-          aria-label="Add to a playlist"
-          onClick={() => setPicking(true)}
-        >
-          <IconPlus />
-        </button>
+        {trackId > 0 && (
+          <button
+            className="pbicon"
+            title="Add to a playlist"
+            aria-label="Add to a playlist"
+            onClick={() => setPicking(true)}
+          >
+            <IconPlus />
+          </button>
+        )}
         {uiPlugins.map(
           (pl) =>
             pl.playbar && (
@@ -9326,7 +9744,11 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
       {info &&
         p.current &&
         createPortal(
-          <TrackInfoModal trackId={p.current.trackId} onClose={() => setInfo(false)} />,
+          trackId ? (
+            <TrackInfoModal trackId={trackId} onClose={() => setInfo(false)} />
+          ) : ext ? (
+            <ExternalInfoModal hit={ext} say={say} onClose={() => setInfo(false)} />
+          ) : null,
           document.body,
         )}
       {openPanel === 'lyrics' &&
@@ -9341,7 +9763,7 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
           createPortal(
             <pl.playbar.Panel
               key={pl.id}
-              trackId={p.current.trackId}
+              trackId={trackId}
               title={p.current.title}
               artistName={p.current.artistName}
               say={say}
@@ -9359,7 +9781,7 @@ function PlayBar({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
             onClose={() => setPicking(false)}
             onPick={async (id, name) => {
               if (!p.current) return;
-              await api.addToPlaylist(id, [p.current.trackId]);
+              await api.addToPlaylist(id, [trackId]);
               say('good', `Added ${p.current.title} to ${name}`);
             }}
           />,

@@ -297,7 +297,7 @@ export class UserLibrary {
 
   // ---- one user's library -------------------------------------------------
 
-  add(userId: number, trackId: number, source: 'request' | 'add' | 'import' = 'add'): void {
+  add(userId: number, trackId: number, source: 'request' | 'add' | 'import' | 'external' = 'add'): void {
     this.db
       .prepare(
         `INSERT INTO user_tracks (user_id, track_id, added_at, source)
