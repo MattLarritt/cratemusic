@@ -3052,3 +3052,27 @@ header.top {
 .pluginsettings label { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.5rem 0; max-width: 28rem; }
 .pluginsettings label.chk { flex-direction: row; align-items: center; gap: 0.4rem; }
 .pluginsettings .hint { font-size: 0.78rem; }
+
+/* ---- search: three bands ----
+   In your library, then each streaming source, then everywhere else. A hairline between
+   bands; inside one, small caps name the kind of thing (Songs, Artists, Albums). */
+.searchband + .searchband { border-top: 1px solid var(--bd); margin-top: 22px; }
+.searchband .subhead {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 16px 0 8px;
+}
+/* A button, so it brings no type of its own; sized to sit under a list, not as a tile. */
+.showall.seemore {
+  font: inherit;
+  font-size: 0.85rem;
+  background: none;
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px;
+  cursor: pointer;
+}
+.showall.seemore:disabled { opacity: 0.6; cursor: default; }

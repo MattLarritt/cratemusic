@@ -959,8 +959,9 @@ export const api = {
   searchTracks: (q: string) =>
     get<{ tracks: TrackHit[] }>(`/api/tracks/search?q=${encodeURIComponent(q)}`),
   /** Songs from external sources, searched separately because they take seconds. */
-  externalSearch: (q: string) =>
-    get<{ enabled: boolean; hits: ExternalHit[] }>(`/api/external/search?q=${encodeURIComponent(q)}`),
+  /** `limit` is per source; the server allows up to 15. */
+  externalSearch: (q: string, limit = 5) =>
+    get<{ enabled: boolean; hits: ExternalHit[] }>(`/api/external/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   externalState: (id: string) => get<ExternalHit>(`/api/external/${encodeURIComponent(id)}`),
   /** The web player's listen report — thirty seconds in, the song is kept. */
   externalListened: (id: string) =>

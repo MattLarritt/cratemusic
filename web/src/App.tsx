@@ -2056,6 +2056,7 @@ function SearchView({
     if (wideTracks) api.searchTracks(q).then((r) => setWideTracks(r.tracks)).catch(() => undefined);
   }, [q, wideTracks]);
 
+  const mySeq = seq.current;
   if (!local) return <div className="spinner">Searching…</div>;
 
   // The wide list opens with the same local rows in the same order, so swapping it in adds
@@ -2079,105 +2080,205 @@ function SearchView({
     return err ? <div className="note bad">{err}</div> : <div className="empty">Nothing found for “{q}”.</div>;
   }
 
+  // Library rows first, then everything else the wide search found — pooled songs you can add
+  // at once, and songs that have to be requested.
+  const mineTracks = tracks.filter((t) => t.mine);
+  const otherTracks = tracks.filter((t) => !t.mine);
+  // External hits grouped by source, in the order the server returned them.
+  const sources: { source: string; label: string; hits: ExternalHit[] }[] = [];
+  for (const h of external ?? []) {
+    const group = sources.find((g) => g.source === h.source);
+    if (group) group.hits.push(h);
+    else sources.push({ source: h.source, label: h.label, hits: [h] });
+  }
+  // Until they answer, the sources hold their place: YouTube arriving three seconds late must
+  // not shove the MusicBrainz results down the page under somebody's thumb.
+  const pendingSources = external === null ? me?.externalSources ?? [] : [];
+  const anyLibrary = mineTracks.length > 0 || local.artists.length > 0 || local.albums.length > 0;
+  const anyElsewhere = otherTracks.length > 0 || wideArtists.length > 0 || wideAlbums.length > 0;
+
   return (
     <>
-      <SongResults q={q} say={say} tracks={tracks} onChanged={reload} />
-      {external && external.length > 0 && (
-        <ExternalResults hits={external} q={q} autoKeep={Boolean(me?.autoKeepExternal)} say={say} />
-      )}
-
-      {local.artists.length > 0 && (
-        <>
+      {/*
+       * Three bands, ordered by what happens when you press play: yours plays now; a source
+       * like YouTube plays now and can be kept; everything else has to be fetched first.
+       * Each list shows its best few and a See more — a search is usually after one thing,
+       * and the page should find it without scrolling.
+       */}
+      {anyLibrary && (
+        <section className="searchband">
           <div className="rowhead">
-            <h2>Artists</h2>
-            <span className="reason">in your library</span>
+            <h2>In your library</h2>
           </div>
-          <div className="grid">
-            {local.artists.map((a) => (
-              <LocalArtistCard key={a.name} name={a.name} images={a.images} say={say} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {local.albums.length > 0 && (
-        <>
-          <div className="rowhead">
-            <h2>Albums</h2>
-            <span className="reason">in your library</span>
-          </div>
-          <div className="grid">
-            {local.albums.map((al) => (
-              <div
-                key={`${al.artistName}|${al.title}`}
-                className="card clickable"
-                onClick={() =>
-                  navigate({
-                    name: 'albumpage',
-                    artist: al.artistName,
-                    album: al.title,
-                    ...(al.mbid ? { mbid: al.mbid } : {}),
-                  })
-                }
-              >
-                <Art images={al.images} label={al.title} />
-                <div className="meta">
-                  <div className="t">{al.title}</div>
-                  <div className="s">{al.artistName}</div>
-                  <div style={{ marginTop: 8 }}>
-                    <span className="tag held">in library</span>
+          {mineTracks.length > 0 && (
+            <SongResults q={q} say={say} tracks={mineTracks} onChanged={reload} first={5} heading="Songs" />
+          )}
+          {local.artists.length > 0 && (
+            <Capped items={local.artists} first={5} heading="Artists" layout="grid">
+              {(a) => <LocalArtistCard key={a.name} name={a.name} images={a.images} say={say} />}
+            </Capped>
+          )}
+          {local.albums.length > 0 && (
+            <Capped items={local.albums} first={5} heading="Albums" layout="grid">
+              {(al) => (
+                <div
+                  key={`${al.artistName}|${al.title}`}
+                  className="card clickable"
+                  onClick={() =>
+                    navigate({
+                      name: 'albumpage',
+                      artist: al.artistName,
+                      album: al.title,
+                      ...(al.mbid ? { mbid: al.mbid } : {}),
+                    })
+                  }
+                >
+                  <Art images={al.images} label={al.title} />
+                  <div className="meta">
+                    <div className="t">{al.title}</div>
+                    <div className="s">{al.artistName}</div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </>
+              )}
+            </Capped>
+          )}
+        </section>
       )}
 
-      {searching && <div className="spinner">Searching everywhere…</div>}
-      {err && <div className="note bad">{err}</div>}
-
-      {wideArtists.length > 0 && (
-        <>
+      {sources.map((g) => (
+        <section className="searchband" key={g.source}>
+          <ExternalResults
+            hits={g.hits}
+            q={q}
+            autoKeep={Boolean(me?.autoKeepExternal)}
+            say={say}
+            first={3}
+            onMore={async () => {
+              // More of this source, merged below what is already on screen — a bigger
+              // search can reorder the top, and rows must not jump under the pointer.
+              const r = await api.externalSearch(q, 15);
+              if (seq.current !== mySeq) return;
+              setExternal((cur) => {
+                const have = new Set((cur ?? []).map((h) => h.id));
+                return [...(cur ?? []), ...r.hits.filter((h) => h.source === g.source && !have.has(h.id))];
+              });
+            }}
+          />
+        </section>
+      ))}
+      {pendingSources.map((label) => (
+        <section className="searchband" key={`pending-${label}`}>
           <div className="rowhead">
-            <h2>Artists</h2>
-            <span className="reason">from everywhere</span>
+            <h2>{label}</h2>
+            <span className="reason">not in your library</span>
           </div>
-          <div className="grid">
-            {wideArtists.map((a) => (
-              <Link
-                key={a.mbid}
-                to={{ name: 'artist', mbid: a.mbid }}
-                className="card"
-                onNavigate={() => rememberArtist(a.mbid, a.name)}
-              >
-                <Art images={a.images} label={a.name} shape="circle" />
-                <div className="meta">
-                  <div className="t">{a.name}</div>
-                  <div className="s">
-                    {a.held ? <span className="tag held">in library</span> : a.genres[0] ?? 'artist'}
+          <div className="spinner">Searching {label}…</div>
+        </section>
+      ))}
+
+      {(anyElsewhere || searching || err) && (
+        <section className="searchband">
+          <div className="rowhead">
+            <h2>Everywhere else</h2>
+            <span className="reason">from MusicBrainz · request to download</span>
+          </div>
+          {otherTracks.length > 0 && (
+            <SongResults q={q} say={say} tracks={otherTracks} onChanged={reload} first={5} heading="Songs" />
+          )}
+          {searching && <div className="spinner">Searching everywhere…</div>}
+          {err && <div className="note bad">{err}</div>}
+          {wideArtists.length > 0 && (
+            <Capped items={wideArtists} first={5} heading="Artists" layout="grid">
+              {(a) => (
+                <Link
+                  key={a.mbid}
+                  to={{ name: 'artist', mbid: a.mbid }}
+                  className="card"
+                  onNavigate={() => rememberArtist(a.mbid, a.name)}
+                >
+                  <Art images={a.images} label={a.name} shape="circle" />
+                  <div className="meta">
+                    <div className="t">{a.name}</div>
+                    <div className="s">
+                      {a.held ? <span className="tag held">in library</span> : a.genres[0] ?? 'artist'}
+                    </div>
                   </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </>
-      )}
-
-      {wideAlbums.length > 0 && (
-        <>
-          <div className="rowhead">
-            <h2>Albums</h2>
-            <span className="reason">requesting a song? request its album</span>
-          </div>
-          <div className="grid">
-            {wideAlbums.map((al) => (
-              <AlbumCard key={al.mbid} album={al} say={say} />
-            ))}
-          </div>
-        </>
+                </Link>
+              )}
+            </Capped>
+          )}
+          {wideAlbums.length > 0 && (
+            <Capped items={wideAlbums} first={5} heading="Albums" layout="grid">
+              {(al) => <AlbumCard key={al.mbid} album={al} say={say} />}
+            </Capped>
+          )}
+        </section>
       )}
     </>
+  );
+}
+
+/**
+ * The first few of a list, and a See more for the rest.
+ *
+ * In place, not a new page: a search result is only worth a click when it is right there,
+ * and See fewer puts the page back the way it was.
+ */
+function Capped<T>({
+  items,
+  first,
+  heading,
+  layout,
+  children,
+}: {
+  items: T[];
+  first: number;
+  heading?: string;
+  layout: 'grid' | 'rows';
+  children: (item: T, index: number) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? items : items.slice(0, first);
+  return (
+    <>
+      {heading && <div className="subhead">{heading}</div>}
+      <div className={layout === 'grid' ? 'grid' : 'songrows'}>{shown.map((item, i) => children(item, i))}</div>
+      <SeeMore more={Math.max(0, items.length - first)} open={open} onToggle={() => setOpen(!open)} />
+    </>
+  );
+}
+
+function SeeMore({
+  more,
+  open,
+  onToggle,
+  busy,
+}: {
+  /** How many are hidden; nothing renders when none are. Unknown (a source to ask): -1. */
+  more: number;
+  open: boolean;
+  onToggle: () => void;
+  busy?: boolean;
+}) {
+  if (more === 0 || (more < 0 && open)) return null;
+  if (more > 0 && !open) {
+    return (
+      <button className="showall seemore" onClick={onToggle}>
+        See {more} more
+      </button>
+    );
+  }
+  if (more < 0) {
+    return (
+      <button className="showall seemore" disabled={busy} onClick={onToggle}>
+        {busy ? 'Finding more…' : 'See more'}
+      </button>
+    );
+  }
+  return (
+    <button className="showall seemore" onClick={onToggle}>
+      See fewer
+    </button>
   );
 }
 
@@ -8153,41 +8254,36 @@ function SongResults({
   say,
   tracks,
   onChanged,
+  first,
+  heading,
 }: {
   q: string;
   say: (k: 'good' | 'bad', t: string) => void;
   tracks: TrackHit[];
   onChanged: () => void;
+  first: number;
+  heading: string;
 }) {
   if (!tracks.length) return null;
-
   return (
-    <>
-      <div className="rowhead">
-        <h2>Songs</h2>
-        {tracks.some((t) => t.mine) && (
-          <span className="reason">{tracks.filter((t) => t.mine).length} in your library</span>
-        )}
-      </div>
-      <div className="songrows">
-        {tracks.map((t, i) => (
-          <SongRow
-            key={`${t.artistName}|${t.albumTitle}|${t.title}-${i}`}
-            track={t}
-            // Not a play queue — search rows act individually — but the position still
-            // uniquely identifies a row, which the preview button needs.
-            index={i}
-            label={`“${q}”`}
-            say={say}
-            mine={t.mine}
-            onDisk={t.onDisk}
-            albumMbid={t.albumMbid}
-            onChanged={onChanged}
-            variant="search"
-          />
-        ))}
-      </div>
-    </>
+    <Capped items={tracks} first={first} heading={heading} layout="rows">
+      {(t, i) => (
+        <SongRow
+          key={`${t.artistName}|${t.albumTitle}|${t.title}-${i}`}
+          track={t}
+          // Not a play queue — search rows act individually — but the position still
+          // uniquely identifies a row, which the preview button needs.
+          index={i}
+          label={`“${q}”`}
+          say={say}
+          mine={t.mine}
+          onDisk={t.onDisk}
+          albumMbid={t.albumMbid}
+          onChanged={onChanged}
+          variant="search"
+        />
+      )}
+    </Capped>
   );
 }
 
@@ -8200,19 +8296,29 @@ function SongResults({
  * see search3 — because a phone client cannot show a second section; here it can.
  */
 function ExternalResults({
-  hits,
+  hits: all,
   q,
   autoKeep,
   say,
+  first,
+  onMore,
 }: {
+  /** One source's hits. */
   hits: ExternalHit[];
   q: string;
   /** Whether listening keeps a song for this person, or only asking does. */
   autoKeep: boolean;
   say: (k: 'good' | 'bad', t: string) => void;
+  first: number;
+  /** Ask the source for more than the first search brought back. */
+  onMore: () => Promise<void>;
 }) {
   const p = usePlayer();
-  const label = hits[0]?.label ?? 'elsewhere';
+  const [open, setOpen] = useState(false);
+  const [asked, setAsked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const hits = open ? all : all.slice(0, first);
+  const label = all[0]?.label ?? 'elsewhere';
   // Played as one queue in the order shown, so "next" moves down the list rather than stopping.
   const queue = hits.map(
     (h): PlayableTrack =>
@@ -8223,9 +8329,9 @@ function ExternalResults({
   return (
     <>
       <div className="rowhead">
-        <h2>Not in your library</h2>
+        <h2>{label}</h2>
         <span className="reason">
-          from {label} · {autoKeep ? 'kept once you’ve listened for 30 seconds' : 'plays now, ⋯ to add it to your library'}
+          not in your library · {autoKeep ? 'kept once you’ve listened for 30 seconds' : 'plays now, ⋯ to add it'}
         </span>
       </div>
       <div className="songrows">
@@ -8246,6 +8352,24 @@ function ExternalResults({
           />
         ))}
       </div>
+      <SeeMore
+        // What is already here first; then, once, what the source can find beyond it.
+        more={!open && all.length > first ? all.length - first : asked ? 0 : -1}
+        open={open && asked}
+        busy={busy}
+        onToggle={() => {
+          if (!open && all.length > first) {
+            setOpen(true);
+            return;
+          }
+          setOpen(true);
+          setAsked(true);
+          setBusy(true);
+          void onMore()
+            .catch((e: Error) => say('bad', e.message))
+            .finally(() => setBusy(false));
+        }}
+      />
     </>
   );
 }

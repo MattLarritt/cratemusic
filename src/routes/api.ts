@@ -1736,12 +1736,18 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     };
   };
 
+  /**
+   * `limit` is per source: 5 by default (the page shows three and keeps two in hand), up to
+   * 15 when somebody presses See more.
+   */
   app.get('/api/external/search', async (req, reply) => {
     const c = need(req, reply);
     if (!c) return;
-    const q = String((req.query as Record<string, string>).q ?? '').trim();
+    const qs = req.query as Record<string, string>;
+    const q = String(qs.q ?? '').trim();
+    const limit = Math.min(Math.max(Number(qs.limit) || 5, 1), 15);
     if (q.length < 2 || !deps.external.enabled()) return { enabled: deps.external.enabled(), hits: [] };
-    const hits = await deps.external.search(q, 5);
+    const hits = await deps.external.search(q, limit);
     return { enabled: true, hits: hits.map((r) => externalView(r, c.id)) };
   });
 
