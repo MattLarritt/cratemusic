@@ -215,7 +215,7 @@ export function adminRoutes(app: FastifyInstance, deps: AdminDeps): void {
               .split(',')
               .map((x) => x.trim())
               .filter(Boolean);
-      } else if (k === 'requireLossless' || k === 'songCharacteristics') {
+      } else if (k === 'requireLossless' || k === 'songCharacteristics' || k === 'warmPages') {
         patch[k] = v === true || v === 'true' || v === 1 || v === '1';
       } else if (typeof v === 'number' || /MbPerTrack|maxTotalMb|Attempts|Minutes|Seeds/.test(k)) {
         const n = Number(v);

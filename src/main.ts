@@ -36,7 +36,9 @@ import { MusicImport } from './lib/musicimport.js';
 import { MusicBrainz } from './lib/musicbrainz.js';
 import { Store } from './lib/store.js';
 import { PLUGINS } from './plugins/index.js';
-import { RETIRED_PLUGIN_IDS, loadDynamicPlugins } from './lib/plugin.js';
+import { PluginSettings, PluginState, RETIRED_PLUGIN_IDS, loadDynamicPlugins } from './lib/plugin.js';
+import { Ingester } from './lib/ingest.js';
+import { ExternalCatalog } from './lib/external.js';
 import { PageWarmer } from './lib/warm.js';
 import { refreshSeedsFromLibrary } from './lib/taste.js';
 import { apiRoutes } from './routes/api.js';
@@ -120,6 +122,9 @@ const PLAYLIST_ART_DIR = process.env.CRATE_PLAYLIST_ART_DIR ?? dirname(DB_PATH) 
 // Installed plugins live beside the database — downloaded artifacts, so they survive a
 // container recreate and are re-downloadable if lost.
 const PLUGIN_DIR = process.env.CRATE_PLUGIN_DIR ?? dirname(DB_PATH) + '/plugins';
+// Each plugin's own writable space (tools, caches, staging), beside its code but not in it,
+// so reinstalling a plugin replaces its code and keeps what it built up.
+const PLUGIN_DATA_DIR = process.env.CRATE_PLUGIN_DATA_DIR ?? dirname(DB_PATH) + '/plugin-data';
 // Minutes a SABnzbd job may show no change before the pipeline gives up on it and
 // tries the next release. Configurable mainly so the watchdog can be tested without
 // waiting twenty minutes.
@@ -346,6 +351,35 @@ artRoutes(app, {
   trackPaths: (artist, album) => userlib.poolForAlbum(artist, album).map((t) => t.path),
 });
 
+/*
+ * External sources: songs from outside the library (YouTube is the first, as a plugin).
+ *
+ * Built here rather than inside apiRoutes because the web API and OpenSubsonic both need the
+ * SAME catalog — the id map and the keep policy have to be one thing, or a song kept through
+ * a phone would be unknown to the web page. The sources themselves register from apiRoutes,
+ * where each plugin's context is built.
+ */
+const pluginState = new PluginState(db);
+const pluginSettings = new PluginSettings(db);
+const ingester = new Ingester({ musicRoot: MUSIC_ROOT, library, userlib, acoustid, recommender, notifier, log: app.log });
+const external: ExternalCatalog = new ExternalCatalog(db, store, userlib, ingester, pluginState, app.log, {
+  /*
+   * One budget with album requests, not a second allowance beside it: the daily cap is about
+   * how much a person may pull onto the server, and a kept song is a download like any other.
+   * Same rule as requests, which is to say it applies to everyone and 0 means unlimited.
+   */
+  autoKeep: (userId): boolean => store.userById(userId)?.auto_keep_external === 1,
+  capCheck: (userId): string | null => {
+    const cap = settings.all().dailyAlbumCap;
+    if (cap <= 0) return null;
+    const user = store.userById(userId);
+    if (!user) return 'unknown user';
+    const since = Math.floor(Date.now() / 1000) - 86400;
+    const used: number = store.albumsQueuedSince(user.username, since) + external.keptSince(userId, since);
+    return used >= cap ? `${used}/${cap} downloads in the last 24h` : null;
+  },
+});
+
 // Library imports (Apple Music exports and friends), processed in the background.
 const musicimport = new MusicImport(db, store, userlib, mb, pipeline, recommender, app.log);
 setInterval(() => void musicimport.tick().catch(() => undefined), 20 * 1000).unref();
@@ -354,6 +388,11 @@ apiRoutes(app, {
   db,
   plugins: allPlugins,
   pluginDir: PLUGIN_DIR,
+  pluginDataDir: PLUGIN_DATA_DIR,
+  pluginState,
+  pluginSettings,
+  ingester,
+  external,
   store,
   cookieName: COOKIE_NAME,
   lastfm,
@@ -393,7 +432,7 @@ apiRoutes(app, {
  * the caller's own tracks instead, so two people pointing a phone client at this host
  * get two different libraries.
  */
-subsonicRoutes(app, { store, userlib, recommender, artcache, playlistart });
+subsonicRoutes(app, { store, userlib, recommender, artcache, playlistart, external });
 
 // The built client. Served from the same origin as the API, which is the whole
 // reason there is one container and no CORS, no BFF proxy and no build-time API
