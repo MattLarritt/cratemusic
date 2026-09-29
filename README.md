@@ -203,6 +203,9 @@ or delete, and never rewrites tags.
 
 ---
 
+## Plugins
+Plugin documentation and some existing plugins are maintained here: [Official Plugins](https://github.com/MattLarritt/crate-plugins)
+
 ## Development
 
 ```bash
