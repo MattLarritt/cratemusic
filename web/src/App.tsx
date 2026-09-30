@@ -60,7 +60,7 @@ import {
   NeedsLogin,
   playlistArtUrl,
   type AdminSettings,
-  type AvailablePlugin,
+  type RepoCatalog,
   type PluginSwitchboard,
   type ChartTrack,
   type AdminStats,
@@ -5972,21 +5972,23 @@ function ExternalActivity() {
 
 function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) {
   const [board, setBoard] = useState<PluginSwitchboard | null>(null);
-  const [available, setAvailable] = useState<AvailablePlugin[] | null>(null);
+  const [available, setAvailable] = useState<RepoCatalog[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [repoField, setRepoField] = useState('');
   const [tokenField, setTokenField] = useState('');
+  /** A replacement token being typed for a repository already in the list, by its id. */
+  const [tokenEdits, setTokenEdits] = useState<Record<number, string>>({});
+  /** Which repository's token form is open, if any, and whether the add form is. */
+  const [tokenOpen, setTokenOpen] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const uiPlugins = useUiPlugins();
 
   const load = useCallback(() => {
     api
       .adminPlugins()
-      .then((b) => {
-        setBoard(b);
-        setRepoField(b.repo.repo);
-      })
+      .then(setBoard)
       .catch((e: Error) => say('bad', e.message));
   }, [say]);
   useEffect(load, [load]);
@@ -5995,26 +5997,53 @@ function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) 
     setChecking(true);
     api
       .adminPluginsAvailable()
-      .then((r) => setAvailable(r.available))
+      .then((r) => setAvailable(r.repos))
       .catch((e: Error) => say('bad', e.message))
       .finally(() => setChecking(false));
   };
 
-  const saveSource = () => {
+  const addRepo = () => {
+    const name = repoField.trim();
     void api
-      .setPluginSource(repoField.trim(), tokenField ? tokenField : undefined)
+      .addPluginRepo(name, tokenField.trim() || undefined)
       .then(() => {
+        setRepoField('');
         setTokenField('');
-        say('good', 'Plugin repository saved');
+        setAdding(false);
+        say('good', `${name} added`);
+        load();
+        setAvailable(null);
+      })
+      .catch((e: Error) => say('bad', e.message));
+  };
+
+  const setToken = (id: number, token: string, what: string) => {
+    void api
+      .setPluginRepoToken(id, token)
+      .then(() => {
+        setTokenEdits((t) => ({ ...t, [id]: '' }));
+        setTokenOpen(null);
+        say('good', what);
         load();
       })
       .catch((e: Error) => say('bad', e.message));
   };
 
-  const install = (id: string) => {
-    setBusy(id);
+  const removeRepo = (id: number, name: string) => {
     void api
-      .installPlugin(id)
+      .removePluginRepo(id)
+      .then(() => {
+        say('good', `${name} removed — anything installed from it stays installed`);
+        load();
+        setAvailable((a) => a?.filter((c) => c.repo !== name) ?? null);
+      })
+      .catch((e: Error) => say('bad', e.message));
+  };
+
+  const install = (id: string, repo: string) => {
+    setBusy(`${repo}|${id}`);
+    void api
+      .installPlugin(id, repo)
       .then((r) => {
         say('good', `${id} ${r.needsRestart ? 'installed — restart to activate' : 'installed'}`);
         load();
@@ -6117,6 +6146,7 @@ function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) 
               </span>
               <span className="s muted">
                 {pl.id} · {pl.source === 'builtin' ? 'built in' : pl.source === 'removed' ? 'uninstalled, active until restart' : slotsOf(pl.id) || 'installed'}
+                {pl.repo ? ` · from ${pl.repo}` : ''}
                 {pl.needsRestart && pl.source !== 'removed' ? ' · waiting for restart' : ''}
               </span>
             </div>
@@ -6151,68 +6181,210 @@ function AdminPlugins({ say }: { say: (k: 'good' | 'bad', t: string) => void }) 
       </div>
       <ExternalActivity />
 
-      <h3 className="plsection">Repository</h3>
-      <p className="muted sm">
-        A GitHub repository of pre-built plugins (like MattLarritt/crate-plugins). Private repos
-        need a personal access token with read access to the repository contents — it is stored
-        on the server and never shown again.
-      </p>
-      <div className="plsource">
-        <input
-          type="text"
-          placeholder="owner/repository"
-          value={repoField}
-          onChange={(e) => setRepoField(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder={board.repo.token.set ? `token set (${board.repo.token.hint}) — paste to replace` : 'token (for private repos)'}
-          value={tokenField}
-          autoComplete="new-password"
-          onChange={(e) => setTokenField(e.target.value)}
-        />
-        <button className="btn sm" onClick={saveSource}>
-          Save
-        </button>
-        <button className="btn sec sm" disabled={!board.repo.repo || checking} onClick={checkRepo}>
-          {checking ? 'Checking…' : 'Check the repository'}
-        </button>
+      {/*
+        * Repositories — the public one, a fork, a private one of your own — as one card each.
+        *
+        * A card is the repository's name, whether it has a token, and two quiet actions; the
+        * token form only appears when asked for. Checking fills each card with what that
+        * repository offers, so a plugin is always shown under the place it comes from, and a
+        * repository that could not be read says so in its own card. Removing one only stops
+        * offering its plugins: what was installed from it stays installed.
+        */}
+      <div className="plhead">
+        <h3 className="plsection">Repositories</h3>
+        <div className="plhead-actions">
+          <button className="btn sec sm" disabled={!board.repos.length || checking} onClick={checkRepo}>
+            {checking ? 'Checking…' : available ? 'Check again' : 'Check for plugins'}
+          </button>
+          {!adding && (
+            <button className="btn sm" onClick={() => setAdding(true)}>
+              Add repository
+            </button>
+          )}
+        </div>
       </div>
+      <p className="muted sm plintro">
+        GitHub repositories of pre-built plugins. MattLarritt/crate-plugins has the official ones.
+      </p>
 
-      {available && (
-        <>
-          <h3 className="plsection">Available</h3>
-          <div className="pluginrows">
-            {available.map((pl) => {
-              const update = pl.installed && pl.installedVersion && pl.installedVersion !== pl.version;
-              return (
-                <div key={pl.id} className="pluginrow">
-                  <div className="words">
-                    <span className="t">
-                      {pl.name} <span className="muted">v{pl.version}</span>
-                    </span>
-                    <span className="s muted">{pl.description}</span>
-                  </div>
-                  {pl.builtin ? (
-                    <span className="muted sm">built in</span>
-                  ) : update ? (
-                    <button className="btn sm" disabled={busy === pl.id} onClick={() => install(pl.id)}>
-                      Update to v{pl.version}
-                    </button>
-                  ) : pl.installed ? (
-                    <span className="muted sm">installed</span>
-                  ) : (
-                    <button className="btn sm" disabled={busy === pl.id} onClick={() => install(pl.id)}>
-                      Install
+      {adding && (
+        <form
+          className="repocard repoadd"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (repoField.trim()) addRepo();
+          }}
+        >
+          <label>
+            <span>Repository</span>
+            <input
+              type="text"
+              placeholder="owner/name"
+              value={repoField}
+              autoFocus
+              onChange={(e) => setRepoField(e.target.value)}
+            />
+          </label>
+          <label>
+            <span>
+              Token <span className="muted">— only for a private repository</span>
+            </span>
+            <input
+              type="password"
+              placeholder="personal access token with read access to contents"
+              value={tokenField}
+              autoComplete="new-password"
+              onChange={(e) => setTokenField(e.target.value)}
+            />
+          </label>
+          <div className="repoadd-actions">
+            <button className="btn sm" type="submit" disabled={!repoField.trim()}>
+              Add
+            </button>
+            <button
+              className="btn sec sm"
+              type="button"
+              onClick={() => {
+                setAdding(false);
+                setRepoField('');
+                setTokenField('');
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="repocards">
+        {board.repos.map((r) => {
+          const cat = available?.find((c) => c.repo.toLowerCase() === r.repo.toLowerCase());
+          const count = cat && !cat.error ? cat.plugins.length : null;
+          return (
+            <section key={r.id} className="repocard">
+              <header className="repocard-head">
+                <div className="words">
+                  <a className="t" href={`https://github.com/${r.repo}`} target="_blank" rel="noreferrer">
+                    {r.repo}
+                  </a>
+                  <span className="s muted">
+                    {r.token.set ? `Token ${r.token.hint}` : 'Public, no token'}
+                    {count !== null ? ` · ${count} plugin${count === 1 ? '' : 's'}` : ''}
+                  </span>
+                </div>
+                <div className="repocard-actions">
+                  <button
+                    className="linkish"
+                    aria-expanded={tokenOpen === r.id}
+                    onClick={() => setTokenOpen(tokenOpen === r.id ? null : r.id)}
+                  >
+                    {r.token.set ? 'Token' : 'Add token'}
+                  </button>
+                  <button className="linkish quiet" onClick={() => removeRepo(r.id, r.repo)}>
+                    Remove
+                  </button>
+                </div>
+              </header>
+
+              {tokenOpen === r.id && (
+                <form
+                  className="repocard-token"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const t = (tokenEdits[r.id] ?? '').trim();
+                    if (t) setToken(r.id, t, `Token saved for ${r.repo}`);
+                  }}
+                >
+                  <input
+                    type="password"
+                    placeholder={r.token.set ? `Replace the token ending ${r.token.hint.replace('…', '')}` : 'Personal access token'}
+                    value={tokenEdits[r.id] ?? ''}
+                    autoFocus
+                    autoComplete="new-password"
+                    onChange={(e) => setTokenEdits((t) => ({ ...t, [r.id]: e.target.value }))}
+                  />
+                  <button className="btn sm" type="submit" disabled={!(tokenEdits[r.id] ?? '').trim()}>
+                    Save
+                  </button>
+                  {r.token.set && (
+                    <button
+                      className="btn sec sm"
+                      type="button"
+                      onClick={() => setToken(r.id, '', `Token cleared for ${r.repo}`)}
+                    >
+                      Clear
                     </button>
                   )}
-                </div>
-              );
-            })}
-            {available.length === 0 && <p className="muted">The repository offers no plugins.</p>}
+                  <button className="btn sec sm" type="button" onClick={() => setTokenOpen(null)}>
+                    Cancel
+                  </button>
+                </form>
+              )}
+
+              {cat?.error && <div className="repocard-error">Couldn’t read this repository: {cat.error}</div>}
+              {cat && !cat.error && cat.plugins.length === 0 && (
+                <p className="muted sm repocard-empty">This repository offers no plugins.</p>
+              )}
+              {cat && !cat.error && cat.plugins.length > 0 && (
+                <ul className="repocard-plugins">
+                  {cat.plugins.map((pl) => {
+                    const key = `${cat.repo}|${pl.id}`;
+                    const update =
+                      pl.installed && pl.fromHere && pl.installedVersion && pl.installedVersion !== pl.version;
+                    return (
+                      <li key={key} className="repoplugin">
+                        <div className="words">
+                          <span className="t">
+                            {pl.name} <span className="muted">v{pl.version}</span>
+                          </span>
+                          <span className="s muted">{pl.description}</span>
+                        </div>
+                        <div className="repoplugin-action">
+                          {pl.builtin ? (
+                            <span className="muted sm">Built in</span>
+                          ) : update ? (
+                            <button className="btn sm" disabled={busy === key} onClick={() => install(pl.id, cat.repo)}>
+                              Update to v{pl.version}
+                            </button>
+                          ) : pl.installed && pl.fromHere ? (
+                            <span className="plinstalled">Installed</span>
+                          ) : pl.installed ? (
+                            // The same plugin from somewhere else: say where, and let this one replace it.
+                            <>
+                              <span className="muted sm">Installed from {pl.installedFrom}</span>
+                              <button className="btn sec sm" disabled={busy === key} onClick={() => install(pl.id, cat.repo)}>
+                                Use this one
+                              </button>
+                            </>
+                          ) : (
+                            <button className="btn sm" disabled={busy === key} onClick={() => install(pl.id, cat.repo)}>
+                              Install
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+        {board.repos.length === 0 && !adding && (
+          <div className="repocard repoempty">
+            <p className="muted">No repositories yet.</p>
+            <button
+              className="btn sm"
+              onClick={() => {
+                setRepoField('MattLarritt/crate-plugins');
+                setAdding(true);
+              }}
+            >
+              Add MattLarritt/crate-plugins
+            </button>
           </div>
-        </>
-      )}
+        )}
+      </div>
     </>
   );
 }

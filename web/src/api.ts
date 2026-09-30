@@ -748,6 +748,8 @@ export interface InstalledPlugin {
   description: string;
   /** builtin = compiled into this image; installed = downloaded; removed = uninstalled, awaiting restart. */
   source: 'builtin' | 'installed' | 'removed';
+  /** The repository an installed plugin came from; null when unknown or not installed. */
+  repo?: string | null;
   enabled: boolean;
   /** Whether this process is actually running its server half. */
   loaded: boolean;
@@ -800,9 +802,16 @@ export interface ExternalRecent {
   trackId: number | null;
 }
 
+/** A repository plugins can be installed from. The token is reported, never returned. */
+export interface PluginRepoSource {
+  id: number;
+  repo: string;
+  token: { set: boolean; hint: string };
+}
+
 export interface PluginSwitchboard {
   installed: InstalledPlugin[];
-  repo: { repo: string; token: { set: boolean; hint: string } };
+  repos: PluginRepoSource[];
   needsRestart: boolean;
 }
 
@@ -813,7 +822,18 @@ export interface AvailablePlugin {
   description: string;
   installed: boolean;
   installedVersion: string | null;
+  /** The repository the installed copy came from; null for an install older than knowing. */
+  installedFrom: string | null;
+  /** The installed copy came from THIS repository (or from before that was recorded). */
+  fromHere: boolean;
   builtin: boolean;
+}
+
+/** One repository's catalog, or why it could not be read. */
+export interface RepoCatalog {
+  repo: string;
+  error?: string;
+  plugins: AvailablePlugin[];
 }
 
 export const api = {
@@ -1217,17 +1237,17 @@ export const api = {
   savePluginSettings: (id: string, values: Record<string, unknown>) =>
     put<PluginSwitchboard>(`/api/admin/plugins/${encodeURIComponent(id)}/settings`, values),
   adminExternal: () => get<{ enabled: boolean; recent: ExternalRecent[] }>('/api/admin/external'),
-  adminPluginsAvailable: () =>
-    get<{ available: AvailablePlugin[] }>('/api/admin/plugins/available'),
-  setPluginSource: (repo: string, token?: string) =>
-    put<{ ok: true; repo: string; token: { set: boolean; hint: string } }>(
-      '/api/admin/plugins/source',
-      token === undefined ? { repo } : { repo, token },
-    ),
-  installPlugin: (id: string) =>
+  adminPluginsAvailable: () => get<{ repos: RepoCatalog[] }>('/api/admin/plugins/available'),
+  addPluginRepo: (repo: string, token?: string) =>
+    post<{ ok: true; repos: PluginRepoSource[] }>('/api/admin/plugins/repos', token ? { repo, token } : { repo }),
+  /** Replace a repository's token; an empty string clears it. */
+  setPluginRepoToken: (id: number, token: string) =>
+    put<{ ok: true; repos: PluginRepoSource[] }>(`/api/admin/plugins/repos/${id}`, { token }),
+  removePluginRepo: (id: number) => del<{ ok: true; repos: PluginRepoSource[] }>(`/api/admin/plugins/repos/${id}`),
+  installPlugin: (id: string, repo: string) =>
     post<{ ok: true; id: string; version: string; needsRestart: boolean }>(
       '/api/admin/plugins/install',
-      { id },
+      { id, repo },
     ),
   uninstallPlugin: (id: string) =>
     del<{ ok: true; needsRestart: boolean }>(`/api/admin/plugins/installed/${encodeURIComponent(id)}`),

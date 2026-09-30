@@ -1938,8 +1938,6 @@ body { padding-bottom: 92px; }
 /* The admin plugin switchboard. */
 .plsection { margin: 22px 0 8px; font-size: 0.95rem; }
 .plsection:first-child { margin-top: 0; }
-.plsource { display: flex; gap: 8px; flex-wrap: wrap; max-width: 560px; }
-.plsource input { flex: 1; min-width: 180px; }
 .restartnote {
   display: flex;
   align-items: center;
@@ -1948,7 +1946,7 @@ body { padding-bottom: 92px; }
   border-color: color-mix(in srgb, var(--warn) 50%, transparent);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
-.pluginrows { display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
+.pluginrows { display: flex; flex-direction: column; gap: 6px; max-width: 720px; }
 .pluginrow {
   display: flex;
   align-items: center;
@@ -3076,3 +3074,116 @@ header.top {
   cursor: pointer;
 }
 .showall.seemore:disabled { opacity: 0.6; cursor: default; }
+
+/* ---- Plugins: repositories ----
+   One card per repository: its name and token state, two quiet actions, and — once checked —
+   what it offers, inside the card. The token and add forms appear only when asked for. */
+.plhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  max-width: 720px;
+  margin-top: 22px;
+}
+.plhead .plsection { margin: 0; }
+.plhead-actions { display: flex; gap: 8px; }
+.plintro { max-width: 720px; margin: 4px 0 12px; }
+.repocards { display: flex; flex-direction: column; gap: 10px; max-width: 720px; }
+.repocard {
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  background: var(--card);
+  overflow: hidden;
+}
+.repocard-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.repocard-head .words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.repocard-head .t {
+  font-weight: 650;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repocard-head .t:hover { color: var(--acc); }
+.repocard-head .s { font-size: 0.8rem; }
+.repocard-actions { display: flex; gap: 2px; flex-shrink: 0; }
+
+/* Text buttons: present, but not asking to be pressed. */
+.linkish {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--acc);
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.linkish:hover { background: var(--acc-soft); }
+.linkish.quiet { color: var(--muted); }
+.linkish.quiet:hover { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); }
+
+.repocard-token {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd);
+  background: var(--bg2);
+}
+.repocard-token input { flex: 1; min-width: 200px; }
+.repocard-error {
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd);
+  font-size: 0.85rem;
+  color: var(--err);
+}
+.repocard-empty { margin: 0; padding: 10px 14px; border-top: 1px solid var(--bd); }
+
+.repocard-plugins { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--bd); }
+.repoplugin {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+}
+.repoplugin + .repoplugin { border-top: 1px solid var(--bd); }
+.repoplugin .words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.repoplugin .t { font-weight: 600; }
+.repoplugin .s {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  /* Two lines of a long description, not a paragraph pushing the button down. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.repoplugin-action { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.plinstalled { font-size: 0.78rem; font-weight: 600; color: var(--ok); }
+
+.repoadd {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 10px;
+  max-width: 720px;
+}
+.repoadd label { display: flex; flex-direction: column; gap: 5px; font-size: 0.82rem; font-weight: 600; }
+.repoadd label .muted { font-weight: 400; }
+.repoadd-actions { display: flex; gap: 8px; }
+.repoempty { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; }
+.repoempty p { margin: 0; }
+
+@media (max-width: 620px) {
+  .repoplugin { flex-direction: column; align-items: stretch; gap: 8px; }
+  .repoplugin-action { justify-content: flex-start; }
+}

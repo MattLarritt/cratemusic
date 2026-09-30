@@ -2283,6 +2283,8 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
         version: m.version as string | null,
         description: m.description,
         source: 'installed' as const,
+        /** The repository it came from; null for an install older than knowing. */
+        repo: m.repo ?? null,
         enabled: pluginState.isEnabled(m.id),
         loaded: loaded.has(m.id),
         // On disk but not in the process: installed since boot, waiting for a restart.
@@ -2311,7 +2313,7 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
           ? { ...e, settings: { schema: plugin.settings, values: deps.pluginSettings.redacted(plugin) } }
           : e;
       }),
-      repo: { repo: repo.repo(), token: repo.tokenState() },
+      repos: repo.sources(),
       needsRestart: installed.some((p) => p.needsRestart),
     };
   };
@@ -2321,48 +2323,82 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
     return switchboard();
   });
 
-  /** The repo's catalog, with what-is-installed folded in so the page can say Update. */
+  /**
+   * Every repository's catalog, with what-is-installed folded in so the page can say Update —
+   * or, for a plugin installed from a different repository, where it came from instead.
+   */
   app.get('/api/admin/plugins/available', async (req, reply) => {
     if (!needAdmin(req, reply)) return;
-    try {
-      const [catalog, onDisk] = await Promise.all([repo.available(), repo.installed()]);
-      return {
-        available: catalog.map((c) => {
+    const [catalogs, onDisk] = await Promise.all([repo.available(), repo.installed()]);
+    return {
+      repos: catalogs.map((cat) => ({
+        repo: cat.repo,
+        ...(cat.error ? { error: cat.error } : {}),
+        plugins: cat.plugins.map((c) => {
           const inst = onDisk.find((m) => m.id === c.id);
+          // An install from before repositories were remembered belongs to whichever offers it.
+          const fromHere = inst ? !inst.repo || inst.repo.toLowerCase() === cat.repo.toLowerCase() : false;
           return {
             ...c,
             installed: Boolean(inst) || deps.plugins.some((p) => p.id === c.id),
             installedVersion: inst?.version ?? null,
+            installedFrom: inst?.repo ?? null,
+            fromHere,
             builtin: PLUGINS_BUILTIN.has(c.id),
           };
         }),
-      };
-    } catch (err) {
-      return reply.code(502).send({ error: (err as Error).message });
-    }
+      })),
+    };
   });
 
-  app.put('/api/admin/plugins/source', async (req, reply) => {
+  /** Add a repository to install plugins from. A token is only for a private one. */
+  app.post('/api/admin/plugins/repos', async (req, reply) => {
     const c = needAdmin(req, reply);
     if (!c) return;
     const b = (req.body ?? {}) as { repo?: unknown; token?: unknown };
     try {
-      repo.setSource(
-        String(b.repo ?? ''),
-        // undefined keeps the stored token; an empty string clears it deliberately.
-        b.token === undefined ? undefined : String(b.token),
-      );
+      repo.addSource(String(b.repo ?? ''), b.token === undefined ? '' : String(b.token));
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
-    app.log.info({ by: c.user }, 'plugin repository configured');
-    return { ok: true, repo: repo.repo(), token: repo.tokenState() };
+    app.log.info({ by: c.user, repo: String(b.repo ?? '') }, 'plugin repository added');
+    return { ok: true, repos: repo.sources() };
+  });
+
+  /** Replace a repository's token, or clear it with an empty string. */
+  app.put('/api/admin/plugins/repos/:id', async (req, reply) => {
+    const c = needAdmin(req, reply);
+    if (!c) return;
+    const b = (req.body ?? {}) as { token?: unknown };
+    try {
+      repo.setToken(Number((req.params as { id: string }).id), String(b.token ?? ''));
+    } catch (err) {
+      return reply.code(404).send({ error: (err as Error).message });
+    }
+    app.log.info({ by: c.user }, 'plugin repository token changed');
+    return { ok: true, repos: repo.sources() };
+  });
+
+  /** Stop offering a repository's plugins. Anything installed from it stays installed. */
+  app.delete('/api/admin/plugins/repos/:id', async (req, reply) => {
+    const c = needAdmin(req, reply);
+    if (!c) return;
+    try {
+      repo.removeSource(Number((req.params as { id: string }).id));
+    } catch (err) {
+      return reply.code(404).send({ error: (err as Error).message });
+    }
+    app.log.info({ by: c.user }, 'plugin repository removed');
+    return { ok: true, repos: repo.sources() };
   });
 
   app.post('/api/admin/plugins/install', async (req, reply) => {
     const c = needAdmin(req, reply);
     if (!c) return;
-    const id = String((req.body as { id?: unknown } | undefined)?.id ?? '');
+    const body = (req.body ?? {}) as { id?: unknown; repo?: unknown };
+    const id = String(body.id ?? '');
+    // Which repository to take it from; left out, the one repository that offers it.
+    const from = typeof body.repo === 'string' && body.repo ? body.repo : undefined;
     if (PLUGINS_BUILTIN.has(id)) {
       return reply.code(400).send({ error: 'that plugin is compiled into this build' });
     }
@@ -2370,8 +2406,8 @@ export function apiRoutes(app: FastifyInstance, deps: Deps): void {
       return reply.code(400).send({ error: 'that feature is part of crate now — nothing to install' });
     }
     try {
-      const manifest = await repo.install(id);
-      app.log.info({ plugin: id, version: manifest.version, by: c.user }, 'plugin installed');
+      const manifest = await repo.install(id, from);
+      app.log.info({ plugin: id, version: manifest.version, repo: manifest.repo, by: c.user }, 'plugin installed');
       // A server half only activates at the next boot; a pure-UI plugin is live on reload.
       return { ok: true, id, version: manifest.version, needsRestart: Boolean(manifest.server) };
     } catch (err) {
